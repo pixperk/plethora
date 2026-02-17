@@ -53,7 +53,11 @@ func (r *Ring) Lookup(key string) *node.Node {
 	hash := md5Hash(key)
 	partitionID := int(hash % uint64(r.Q))
 	ownerID := r.Partitions[partitionID].Token.NodeID
-	return r.NodeMap[ownerID]
+	node, exists := r.NodeMap[ownerID]
+	if !exists {
+		return nil // should never happen since partitions are pre-initialized
+	}
+	return node
 }
 
 // md5Hash returns the first 8 bytes of the MD5 digest as a uint64.
@@ -92,12 +96,18 @@ func (r *Ring) RemoveNode(nodeID string) error {
 
 	delete(r.NodeMap, nodeID)
 
+	found := false
 	// remove from Nodes slice
 	for i, n := range r.Nodes {
 		if n.NodeID == nodeID {
 			r.Nodes = append(r.Nodes[:i], r.Nodes[i+1:]...)
+			found = true
 			break
 		}
+	}
+
+	if !found {
+		return fmt.Errorf("node with ID %s not found", nodeID)
 	}
 
 	// reassign partitions to maintain Q/S partitions per node
