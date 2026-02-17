@@ -3,8 +3,8 @@ package types
 type Key string
 
 type Value struct {
-	ValueName string
-	Context   Context
+	Data    string
+	Context Context
 }
 
 type Context struct {
