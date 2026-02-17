@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pixperk/plethora/node"
+	"github.com/pixperk/plethora/types"
 )
 
 type Ring struct {
@@ -116,4 +117,20 @@ func (r *Ring) RemoveNode(nodeID string) error {
 	}
 
 	return nil
+}
+
+func (r *Ring) Get(key types.Key) ([]types.Value, bool) {
+	node := r.Lookup(string(key))
+	if node == nil {
+		return nil, false
+	}
+	return node.Get(key)
+}
+
+func (r *Ring) Put(key types.Key, val string) {
+	node := r.Lookup(string(key))
+	if node == nil {
+		return
+	}
+	node.Put(key, val)
 }

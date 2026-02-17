@@ -157,3 +157,60 @@ func TestRemoveNodeNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent node")
 	}
 }
+
+func TestPutGet(t *testing.T) {
+	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+
+	r.Put("user:1", "alice")
+	vals, ok := r.Get("user:1")
+	if !ok || len(vals) != 1 || vals[0].Data != "alice" {
+		t.Fatalf("expected [alice], got %v (ok=%v)", vals, ok)
+	}
+}
+
+func TestGetMissing(t *testing.T) {
+	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+
+	_, ok := r.Get("nope")
+	if ok {
+		t.Fatal("expected missing key")
+	}
+}
+
+func TestPutRoutesToCorrectNode(t *testing.T) {
+	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+
+	r.Put("user:1", "alice")
+
+	// the value should only exist on the owner node, not the others
+	owner := r.Lookup("user:1")
+	vals, ok := owner.Get("user:1")
+	if !ok || vals[0].Data != "alice" {
+		t.Fatalf("owner node %s missing the value", owner.NodeID)
+	}
+
+	for _, n := range r.Nodes {
+		if n.NodeID == owner.NodeID {
+			continue
+		}
+		_, ok := n.Get("user:1")
+		if ok {
+			t.Fatalf("non-owner node %s has the value", n.NodeID)
+		}
+	}
+}
+
+func TestPutOverwriteVersions(t *testing.T) {
+	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+
+	r.Put("k", "v1")
+	r.Put("k", "v2")
+
+	vals, _ := r.Get("k")
+	if len(vals) != 1 || vals[0].Data != "v2" {
+		t.Fatalf("expected [v2], got %v", vals)
+	}
+	if vals[0].Context.Version != 2 {
+		t.Fatalf("expected version 2, got %d", vals[0].Context.Version)
+	}
+}
