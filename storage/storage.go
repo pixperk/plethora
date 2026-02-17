@@ -27,7 +27,10 @@ func (s *Storage) Get(key types.Key) ([]types.Value, bool) {
 	defer s.lock.RUnlock()
 
 	values, exists := s.data[key]
-	return values, exists
+	valuesCopy := make([]types.Value, len(values))
+	copy(valuesCopy, values)
+	// return a copy to prevent caller from mutating internal state
+	return valuesCopy, exists
 }
 
 func (s *Storage) Put(key types.Key, val types.Value) {
