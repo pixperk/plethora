@@ -14,28 +14,33 @@ func TestGetMissing(t *testing.T) {
 
 func TestPutGet(t *testing.T) {
 	n := NewNode("n1")
-	n.Put("k", "hello")
+	n.Put("k", "hello", nil) // nil clock = fresh write
 
 	vals, ok := n.Get("k")
 	if !ok || len(vals) != 1 || vals[0].Data != "hello" {
 		t.Fatalf("expected [hello], got %v", vals)
 	}
-	if vals[0].Context.NodeID != "n1" || vals[0].Context.Version != 1 {
-		t.Fatalf("bad context: %+v", vals[0].Context)
+	if vals[0].Clock["n1"] != 1 {
+		t.Fatalf("expected clock {n1: 1}, got %v", vals[0].Clock)
 	}
 }
 
 func TestPutOverwriteIncrementsVersion(t *testing.T) {
 	n := NewNode("n1")
-	n.Put("k", "v1")
-	n.Put("k", "v2")
+	n.Put("k", "v1", nil)
 
+	// get the clock from the first write, pass it as context
 	vals, _ := n.Get("k")
+	ctx := vals[0].Clock
+
+	n.Put("k", "v2", ctx)
+
+	vals, _ = n.Get("k")
 	if len(vals) != 1 {
 		t.Fatalf("expected 1 value, got %d", len(vals))
 	}
-	if vals[0].Data != "v2" || vals[0].Context.Version != 2 {
-		t.Fatalf("expected v2@version2, got %s@version%d", vals[0].Data, vals[0].Context.Version)
+	if vals[0].Data != "v2" || vals[0].Clock["n1"] != 2 {
+		t.Fatalf("expected v2 with clock {n1: 2}, got %s %v", vals[0].Data, vals[0].Clock)
 	}
 }
 
@@ -43,12 +48,10 @@ func TestTwoNodesSameKey(t *testing.T) {
 	n1 := NewNode("n1")
 	n2 := NewNode("n2")
 
-	// simulate both nodes writing to the same storage
-	n1.Put("k", "from-n1")
+	n1.Put("k", "from-n1", nil)
+	n2.Put("k", "from-n2", nil)
 
-	// manually put n2's value into n1's storage to simulate replication
-	n2.Put("k", "from-n2")
-	// n1 and n2 have separate stores, so each has 1 value
+	// separate stores, each has 1 value
 	v1, _ := n1.Get("k")
 	v2, _ := n2.Get("k")
 	if len(v1) != 1 || v1[0].Data != "from-n1" {

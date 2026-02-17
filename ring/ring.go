@@ -7,6 +7,7 @@ import (
 
 	"github.com/pixperk/plethora/node"
 	"github.com/pixperk/plethora/types"
+	"github.com/pixperk/plethora/vclock"
 )
 
 type Ring struct {
@@ -127,10 +128,10 @@ func (r *Ring) Get(key types.Key) ([]types.Value, bool) {
 	return node.Get(key)
 }
 
-func (r *Ring) Put(key types.Key, val string) {
+func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) {
 	node := r.Lookup(string(key))
 	if node == nil {
 		return
 	}
-	node.Put(key, val)
+	node.Put(key, val, ctx)
 }

@@ -13,7 +13,7 @@ type Store interface {
 
 type Storage struct {
 	lock sync.RWMutex
-	data map[types.Key][]types.Value //an array of values for each key to support multiple versions, i.e vector clocks within the context
+	data map[types.Key][]types.Value
 }
 
 func NewStorage() *Storage {
@@ -34,24 +34,29 @@ func (s *Storage) Put(key types.Key, val types.Value) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	//check if the key already exists
-	existingValues, exists := s.data[key]
-
-	//if it doesn't exist, create a new entry
+	existing, exists := s.data[key]
 	if !exists {
 		s.data[key] = []types.Value{val}
 		return
 	}
 
-	//if it exists, check if the node ID matches and update the version
-	for i, existingValue := range existingValues {
-		if existingValue.Context.NodeID == val.Context.NodeID {
-			val.Context.Version = existingValue.Context.Version + 1
-			s.data[key][i] = val
+	// walk existing values, compare clocks
+	var kept []types.Value
+	for _, ev := range existing {
+		// if an existing value's clock descends from (or equals) the new one,
+		// the new write is stale, ignore it entirely
+		if ev.Clock.Descends(val.Clock) {
 			return
 		}
+		// if the new value's clock descends from an existing one,
+		// the existing one is an ancestor, drop it
+		if val.Clock.Descends(ev.Clock) {
+			continue
+		}
+		// otherwise they conflict, keep the existing sibling
+		kept = append(kept, ev)
 	}
 
-	//if the node ID doesn't match, append the new value to the existing values
-	s.data[key] = append(existingValues, val)
+	// add the new value alongside any surviving siblings
+	s.data[key] = append(kept, val)
 }
