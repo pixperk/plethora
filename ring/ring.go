@@ -61,3 +61,49 @@ func md5Hash(key string) uint64 {
 	sum := md5.Sum([]byte(key))
 	return binary.BigEndian.Uint64(sum[:8])
 }
+
+func (r *Ring) AddNode(newNode *node.Node) error {
+	// validate before mutating
+	s := len(r.Nodes) + 1
+	if r.Q%s != 0 {
+		return fmt.Errorf("Q (%d) must be divisible by number of nodes (%d)", r.Q, s)
+	}
+
+	r.Nodes = append(r.Nodes, newNode)
+	r.NodeMap[newNode.NodeID] = newNode
+
+	// reassign partitions to maintain Q/S partitions per node
+	for i := 0; i < r.Q; i++ {
+		r.Partitions[i].Token.NodeID = r.Nodes[i%s].NodeID
+	}
+
+	return nil
+}
+
+func (r *Ring) RemoveNode(nodeID string) error {
+	// validate before mutating
+	s := len(r.Nodes) - 1
+	if s == 0 {
+		return fmt.Errorf("cannot remove last node")
+	}
+	if r.Q%s != 0 {
+		return fmt.Errorf("Q (%d) must be divisible by number of nodes (%d)", r.Q, s)
+	}
+
+	delete(r.NodeMap, nodeID)
+
+	// remove from Nodes slice
+	for i, n := range r.Nodes {
+		if n.NodeID == nodeID {
+			r.Nodes = append(r.Nodes[:i], r.Nodes[i+1:]...)
+			break
+		}
+	}
+
+	// reassign partitions to maintain Q/S partitions per node
+	for i := 0; i < r.Q; i++ {
+		r.Partitions[i].Token.NodeID = r.Nodes[i%s].NodeID
+	}
+
+	return nil
+}
