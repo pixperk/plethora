@@ -40,3 +40,9 @@ func (n *Node) Put(key types.Key, val string, ctx vclock.VClock) {
 
 	n.Storage.Put(key, value)
 }
+
+// Store writes a pre-built value directly to storage without modifying the clock.
+// Used by the ring coordinator to replicate an already-prepared value to nodes.
+func (n *Node) Store(key types.Key, val types.Value) {
+	n.Storage.Put(key, val)
+}

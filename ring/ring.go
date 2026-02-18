@@ -238,10 +238,10 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 		Clock: clock,
 	}
 
-	// write to all N nodes via storage directly (bypass node.Put to avoid double-incrementing the clock)
+	// replicate to all N nodes in the preference list
 	acks := 0
 	for _, n := range nodes {
-		n.Storage.Put(key, value)
+		n.Store(key, value)
 		acks++ // in-process calls always succeed; with networking this would be conditional
 	}
 	if acks < r.W {
