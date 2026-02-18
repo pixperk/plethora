@@ -14,7 +14,6 @@ func makeNodes(ids ...string) []*node.Node {
 	return nodes
 }
 
-// count how many partitions a node owns
 func ownerCount(r *Ring, nodeID string) int {
 	count := 0
 	for _, p := range r.Partitions {
@@ -25,11 +24,18 @@ func ownerCount(r *Ring, nodeID string) int {
 	return count
 }
 
-func TestNewRingDistribution(t *testing.T) {
-	r, err := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
+// helper: N=3, R=2, W=2 (common Dynamo config)
+func newTestRing(t *testing.T, q int, nodes []*node.Node) *Ring {
+	t.Helper()
+	r, err := NewRing(q, 3, 2, 2, nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return r
+}
+
+func TestNewRingDistribution(t *testing.T) {
+	r := newTestRing(t, 6, makeNodes("n1", "n2", "n3"))
 
 	for _, id := range []string{"n1", "n2", "n3"} {
 		if c := ownerCount(r, id); c != 2 {
@@ -39,21 +45,29 @@ func TestNewRingDistribution(t *testing.T) {
 }
 
 func TestNewRingRejectsZeroNodes(t *testing.T) {
-	_, err := NewRing(6, 3, []*node.Node{})
+	_, err := NewRing(6, 3, 2, 2, []*node.Node{})
 	if err == nil {
 		t.Fatal("expected error for zero nodes")
 	}
 }
 
 func TestNewRingRejectsIndivisibleQ(t *testing.T) {
-	_, err := NewRing(7, 3, makeNodes("n1", "n2", "n3"))
+	_, err := NewRing(7, 3, 2, 2, makeNodes("n1", "n2", "n3"))
 	if err == nil {
 		t.Fatal("expected error when Q not divisible by S")
 	}
 }
 
+func TestNewRingRejectsInvalidQuorum(t *testing.T) {
+	// R + W must be > N
+	_, err := NewRing(12, 3, 1, 1, makeNodes("n1", "n2", "n3", "n4"))
+	if err == nil {
+		t.Fatal("expected error when R + W <= N")
+	}
+}
+
 func TestLookupDeterministic(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
 	first := r.Lookup("user:42")
 	for i := 0; i < 100; i++ {
@@ -64,7 +78,7 @@ func TestLookupDeterministic(t *testing.T) {
 }
 
 func TestLookupReturnsValidNode(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
 	nodeIDs := map[string]bool{"n1": true, "n2": true, "n3": true}
 	keys := []string{"a", "b", "c", "foo", "bar", "user:1", "user:999"}
@@ -80,7 +94,7 @@ func TestLookupReturnsValidNode(t *testing.T) {
 }
 
 func TestAddNode(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
 	err := r.AddNode(node.NewNode("n4"))
 	if err != nil {
@@ -99,7 +113,7 @@ func TestAddNode(t *testing.T) {
 }
 
 func TestAddNodeRejectsIndivisibleQ(t *testing.T) {
-	r, _ := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 6, makeNodes("n1", "n2", "n3"))
 
 	err := r.AddNode(node.NewNode("n4"))
 	if err == nil {
@@ -112,7 +126,7 @@ func TestAddNodeRejectsIndivisibleQ(t *testing.T) {
 }
 
 func TestRemoveNode(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
+	r, _ := NewRing(12, 3, 2, 2, makeNodes("n1", "n2", "n3", "n4"))
 
 	err := r.RemoveNode("n4")
 	if err != nil {
@@ -135,7 +149,7 @@ func TestRemoveNode(t *testing.T) {
 }
 
 func TestRemoveNodeRejectsLastNode(t *testing.T) {
-	r, _ := NewRing(6, 1, makeNodes("n1"))
+	r, _ := NewRing(6, 1, 1, 1, makeNodes("n1"))
 	err := r.RemoveNode("n1")
 	if err == nil {
 		t.Fatal("expected error when removing last node")
@@ -143,7 +157,7 @@ func TestRemoveNodeRejectsLastNode(t *testing.T) {
 }
 
 func TestRemoveNodeNotFound(t *testing.T) {
-	r, _ := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 6, makeNodes("n1", "n2", "n3"))
 	err := r.RemoveNode("n99")
 	if err == nil {
 		t.Fatal("expected error for non-existent node")
@@ -151,7 +165,7 @@ func TestRemoveNodeNotFound(t *testing.T) {
 }
 
 func TestPreferenceListReturnsNDistinctNodes(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
+	r, _ := NewRing(12, 3, 2, 2, makeNodes("n1", "n2", "n3", "n4"))
 
 	plist := r.PreferenceList("user:1")
 	if len(plist) != 3 {
@@ -168,7 +182,7 @@ func TestPreferenceListReturnsNDistinctNodes(t *testing.T) {
 }
 
 func TestPreferenceListFirstNodeIsOwner(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
 	owner := r.Lookup("user:1")
 	plist := r.PreferenceList("user:1")
@@ -179,43 +193,39 @@ func TestPreferenceListFirstNodeIsOwner(t *testing.T) {
 }
 
 func TestPutGet(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
-	r.Put("user:1", "alice", nil)
-	vals, ok := r.Get("user:1")
-	if !ok {
-		t.Fatal("expected key to exist")
+	if err := r.Put("user:1", "alice", nil); err != nil {
+		t.Fatal(err)
 	}
-	// all N nodes have the value, so Get returns N copies
-	found := false
-	for _, v := range vals {
-		if v.Data == "alice" {
-			found = true
-			break
-		}
+	vals, err := r.Get("user:1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("expected to find 'alice' in values, got %v", vals)
+	if len(vals) != 1 || vals[0].Data != "alice" {
+		t.Fatalf("expected [alice], got %v", vals)
 	}
 }
 
 func TestGetMissing(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
-	_, ok := r.Get("nope")
-	if ok {
-		t.Fatal("expected missing key")
+	vals, err := r.Get("nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals != nil {
+		t.Fatal("expected nil for missing key")
 	}
 }
 
 func TestPutReplicatesToNNodes(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
+	r, _ := NewRing(12, 3, 2, 2, makeNodes("n1", "n2", "n3", "n4"))
 
 	r.Put("user:1", "alice", nil)
 
 	plist := r.PreferenceList("user:1")
 
-	// all N nodes in preference list should have the value
 	for _, n := range plist {
 		vals, ok := n.Get("user:1")
 		if !ok || len(vals) == 0 {
@@ -226,7 +236,6 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 		}
 	}
 
-	// nodes NOT in preference list should not have the value
 	prefSet := make(map[string]bool)
 	for _, n := range plist {
 		prefSet[n.NodeID] = true
@@ -243,25 +252,17 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 }
 
 func TestPutOverwriteVersions(t *testing.T) {
-	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
 	r.Put("k", "v1", nil)
 
-	// get context from first write, pass it to second
 	vals, _ := r.Get("k")
 	ctx := vals[0].Clock
 
 	r.Put("k", "v2", ctx)
 
 	vals, _ = r.Get("k")
-	found := false
-	for _, v := range vals {
-		if v.Data == "v2" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected v2 in values, got %v", vals)
+	if len(vals) != 1 || vals[0].Data != "v2" {
+		t.Fatalf("expected [v2], got %v", vals)
 	}
 }

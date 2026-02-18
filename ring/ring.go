@@ -18,16 +18,29 @@ type Ring struct {
 	//N is the replication factor, we walk clockwise from a node and pick up n nodes to build up
 	//preference list for the node, to image the rights
 	N int
+	//quorum
+	R int //min number of reads
+	W int //min number of writes
 }
 
 // creates a ring with Q equal-sized partitions distributed evenly across the given nodes.
-func NewRing(q int, n int, nodes []*node.Node) (*Ring, error) {
+func NewRing(q int, n int, R int, W int, nodes []*node.Node) (*Ring, error) {
 	s := len(nodes)
 	if s == 0 {
 		return nil, fmt.Errorf("need at least one node")
 	}
 	if q%s != 0 {
 		return nil, fmt.Errorf("Q (%d) must be divisible by number of nodes (%d)", q, s)
+	}
+
+	if R > n {
+		return nil, fmt.Errorf("R (%d) cannot be greater than N (%d)", R, n)
+	}
+	if W > n {
+		return nil, fmt.Errorf("W (%d) cannot be greater than N (%d)", W, n)
+	}
+	if R+W <= n {
+		return nil, fmt.Errorf("R + W (%d) must be greater than N (%d) for quorum", R+W, n)
 	}
 
 	partitions := make([]Partition, q)
@@ -50,6 +63,8 @@ func NewRing(q int, n int, nodes []*node.Node) (*Ring, error) {
 		Partitions: partitions,
 		Q:          q,
 		N:          n,
+		R:          R,
+		W:          W,
 	}, nil
 }
 
@@ -149,21 +164,27 @@ func (r *Ring) PreferenceList(key types.Key) []*node.Node {
 	return nodes
 }
 
-// Get reads from all N nodes in the preference list, deduplicates using
-// vector clocks, and returns only causally distinct versions (siblings).
-func (r *Ring) Get(key types.Key) ([]types.Value, bool) {
+// Get reads from N nodes in the preference list, requires at least R responses.
+// Deduplicates using vector clocks and returns only causally distinct versions.
+func (r *Ring) Get(key types.Key) ([]types.Value, error) {
 	nodes := r.PreferenceList(key)
 	var allVals []types.Value
+	responses := 0
 	for _, n := range nodes {
 		vals, ok := n.Get(key)
 		if ok {
 			allVals = append(allVals, vals...)
 		}
+		responses++
+	}
+	//quorum : if we got responses from fewer than R nodes, we consider the read failed due to insufficient replicas responding. With networking, this would be based on timeouts and error handling, but in this in-memory simulation, we assume all calls succeed.
+	if responses < r.R {
+		return nil, fmt.Errorf("quorum not met: got %d responses, need R=%d", responses, r.R)
 	}
 	if len(allVals) == 0 {
-		return nil, false
+		return nil, nil
 	}
-	return dedup(allVals), true
+	return dedup(allVals), nil
 }
 
 // dedup filters a list of values down to only causally distinct versions.
@@ -194,12 +215,12 @@ func dedup(vals []types.Value) []types.Value {
 	return result
 }
 
-// Put writes to all N nodes in the preference list.
+// Put writes to N nodes in the preference list, requires at least W successes.
 // The first node (coordinator) builds the value with the vector clock.
-func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) {
+func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 	nodes := r.PreferenceList(key)
 	if len(nodes) == 0 {
-		return
+		return fmt.Errorf("no nodes available")
 	}
 
 	// coordinator builds the clock and value
@@ -218,7 +239,13 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) {
 	}
 
 	// write to all N nodes via storage directly (bypass node.Put to avoid double-incrementing the clock)
+	acks := 0
 	for _, n := range nodes {
 		n.Storage.Put(key, value)
+		acks++ // in-process calls always succeed; with networking this would be conditional
 	}
+	if acks < r.W {
+		return fmt.Errorf("quorum not met: got %d acks, need W=%d", acks, r.W)
+	}
+	return nil
 }
