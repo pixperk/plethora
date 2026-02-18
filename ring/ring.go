@@ -15,10 +15,13 @@ type Ring struct {
 	NodeMap    map[string]*node.Node // nodeID -> node for O(1) lookup
 	Partitions []Partition
 	Q          int // total number of partitions, fixed
+	//N is the replication factor, we walk clockwise from a node and pick up n nodes to build up
+	//preference list for the node, to image the rights
+	N int
 }
 
 // creates a ring with Q equal-sized partitions distributed evenly across the given nodes.
-func NewRing(q int, nodes []*node.Node) (*Ring, error) {
+func NewRing(q int, n int, nodes []*node.Node) (*Ring, error) {
 	s := len(nodes)
 	if s == 0 {
 		return nil, fmt.Errorf("need at least one node")
@@ -46,6 +49,7 @@ func NewRing(q int, nodes []*node.Node) (*Ring, error) {
 		NodeMap:    nodeMap,
 		Partitions: partitions,
 		Q:          q,
+		N:          n,
 	}, nil
 }
 
@@ -120,18 +124,101 @@ func (r *Ring) RemoveNode(nodeID string) error {
 	return nil
 }
 
-func (r *Ring) Get(key types.Key) ([]types.Value, bool) {
-	node := r.Lookup(string(key))
-	if node == nil {
-		return nil, false
+// PreferenceList walks the ring clockwise from the key's partition
+// and collects N distinct nodes responsible for storing this key.
+func (r *Ring) PreferenceList(key types.Key) []*node.Node {
+	hash := md5Hash(string(key))
+	partitionID := int(hash % uint64(r.Q))
+
+	nodes := make([]*node.Node, 0, r.N)
+	//track if node is seen
+	seen := make(map[string]bool)
+
+	// walk partitions clockwise, skip duplicate nodes
+	// make sure to stop after we've seen N distinct nodes, or we've looped through all partitions (in case N > number of nodes)
+	for i := 0; i < r.Q && len(nodes) < r.N; i++ {
+		idx := (partitionID + i) % r.Q
+		nodeID := r.Partitions[idx].Token.NodeID
+		if seen[nodeID] {
+			continue
+		}
+		seen[nodeID] = true
+		nodes = append(nodes, r.NodeMap[nodeID])
 	}
-	return node.Get(key)
+
+	return nodes
 }
 
+// Get reads from all N nodes in the preference list, deduplicates using
+// vector clocks, and returns only causally distinct versions (siblings).
+func (r *Ring) Get(key types.Key) ([]types.Value, bool) {
+	nodes := r.PreferenceList(key)
+	var allVals []types.Value
+	for _, n := range nodes {
+		vals, ok := n.Get(key)
+		if ok {
+			allVals = append(allVals, vals...)
+		}
+	}
+	if len(allVals) == 0 {
+		return nil, false
+	}
+	return dedup(allVals), true
+}
+
+// dedup filters a list of values down to only causally distinct versions.
+// Drops any value that is an ancestor of another value in the list.
+func dedup(vals []types.Value) []types.Value {
+	var result []types.Value
+	for i, v := range vals {
+		dominated := false
+		for j, other := range vals {
+			if i == j {
+				continue
+			}
+			// if other descends from v (and they're not equal), v is an ancestor, drop it
+			if other.Clock.Descends(v.Clock) && !v.Clock.Descends(other.Clock) {
+				dominated = true
+				break
+			}
+			// if they have identical clocks, keep only the first occurrence
+			if other.Clock.Descends(v.Clock) && v.Clock.Descends(other.Clock) && j < i {
+				dominated = true
+				break
+			}
+		}
+		if !dominated {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+// Put writes to all N nodes in the preference list.
+// The first node (coordinator) builds the value with the vector clock.
 func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) {
-	node := r.Lookup(string(key))
-	if node == nil {
+	nodes := r.PreferenceList(key)
+	if len(nodes) == 0 {
 		return
 	}
-	node.Put(key, val, ctx)
+
+	// coordinator builds the clock and value
+	coordinator := nodes[0]
+	var clock vclock.VClock
+	if ctx == nil {
+		clock = vclock.NewVClock()
+	} else {
+		clock = ctx.Copy()
+	}
+	clock.Increment(coordinator.NodeID)
+
+	value := types.Value{
+		Data:  val,
+		Clock: clock,
+	}
+
+	// write to all N nodes via storage directly (bypass node.Put to avoid double-incrementing the clock)
+	for _, n := range nodes {
+		n.Storage.Put(key, value)
+	}
 }

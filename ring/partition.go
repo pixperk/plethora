@@ -7,7 +7,7 @@ package ring
 // - Each node owns Q/S partitions. Owning a partition = holding a token for it.
 // - A token is just the assignment of one partition to one node.
 // - Each partition has exactly one owner (one token). Each node holds Q/S tokens.
-// - When a node joins/leaves, tokens are reassigned — partitions themselves don't change.
+// - When a node joins/leaves, tokens are reassigned, partitions themselves don't change.
 
 // Token is a node's claim on a single partition.
 type Token struct {

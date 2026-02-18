@@ -26,12 +26,11 @@ func ownerCount(r *Ring, nodeID string) int {
 }
 
 func TestNewRingDistribution(t *testing.T) {
-	r, err := NewRing(6, makeNodes("n1", "n2", "n3"))
+	r, err := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// each node should own Q/S = 6/3 = 2 partitions
 	for _, id := range []string{"n1", "n2", "n3"} {
 		if c := ownerCount(r, id); c != 2 {
 			t.Fatalf("node %s owns %d partitions, want 2", id, c)
@@ -40,23 +39,22 @@ func TestNewRingDistribution(t *testing.T) {
 }
 
 func TestNewRingRejectsZeroNodes(t *testing.T) {
-	_, err := NewRing(6, []*node.Node{})
+	_, err := NewRing(6, 3, []*node.Node{})
 	if err == nil {
 		t.Fatal("expected error for zero nodes")
 	}
 }
 
 func TestNewRingRejectsIndivisibleQ(t *testing.T) {
-	_, err := NewRing(7, makeNodes("n1", "n2", "n3"))
+	_, err := NewRing(7, 3, makeNodes("n1", "n2", "n3"))
 	if err == nil {
 		t.Fatal("expected error when Q not divisible by S")
 	}
 }
 
 func TestLookupDeterministic(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
-	// same key always maps to same node
 	first := r.Lookup("user:42")
 	for i := 0; i < 100; i++ {
 		if got := r.Lookup("user:42"); got.NodeID != first.NodeID {
@@ -66,8 +64,7 @@ func TestLookupDeterministic(t *testing.T) {
 }
 
 func TestLookupReturnsValidNode(t *testing.T) {
-	nodes := makeNodes("n1", "n2", "n3")
-	r, _ := NewRing(12, nodes)
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
 	nodeIDs := map[string]bool{"n1": true, "n2": true, "n3": true}
 	keys := []string{"a", "b", "c", "foo", "bar", "user:1", "user:999"}
@@ -83,7 +80,7 @@ func TestLookupReturnsValidNode(t *testing.T) {
 }
 
 func TestAddNode(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
 	err := r.AddNode(node.NewNode("n4"))
 	if err != nil {
@@ -94,7 +91,6 @@ func TestAddNode(t *testing.T) {
 		t.Fatalf("expected 4 nodes, got %d", len(r.Nodes))
 	}
 
-	// each node should own Q/S = 12/4 = 3 partitions
 	for _, id := range []string{"n1", "n2", "n3", "n4"} {
 		if c := ownerCount(r, id); c != 3 {
 			t.Fatalf("node %s owns %d partitions, want 3", id, c)
@@ -103,22 +99,20 @@ func TestAddNode(t *testing.T) {
 }
 
 func TestAddNodeRejectsIndivisibleQ(t *testing.T) {
-	r, _ := NewRing(6, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
 
-	// 6 % 4 != 0
 	err := r.AddNode(node.NewNode("n4"))
 	if err == nil {
 		t.Fatal("expected error when Q not divisible by new S")
 	}
 
-	// ring should be unchanged
 	if len(r.Nodes) != 3 {
 		t.Fatalf("ring mutated on failed add: got %d nodes", len(r.Nodes))
 	}
 }
 
 func TestRemoveNode(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3", "n4"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
 
 	err := r.RemoveNode("n4")
 	if err != nil {
@@ -129,21 +123,19 @@ func TestRemoveNode(t *testing.T) {
 		t.Fatalf("expected 3 nodes, got %d", len(r.Nodes))
 	}
 
-	// each node should own Q/S = 12/3 = 4 partitions
 	for _, id := range []string{"n1", "n2", "n3"} {
 		if c := ownerCount(r, id); c != 4 {
 			t.Fatalf("node %s owns %d partitions, want 4", id, c)
 		}
 	}
 
-	// removed node should own nothing
 	if c := ownerCount(r, "n4"); c != 0 {
 		t.Fatalf("removed node n4 still owns %d partitions", c)
 	}
 }
 
 func TestRemoveNodeRejectsLastNode(t *testing.T) {
-	r, _ := NewRing(6, makeNodes("n1"))
+	r, _ := NewRing(6, 1, makeNodes("n1"))
 	err := r.RemoveNode("n1")
 	if err == nil {
 		t.Fatal("expected error when removing last node")
@@ -151,25 +143,64 @@ func TestRemoveNodeRejectsLastNode(t *testing.T) {
 }
 
 func TestRemoveNodeNotFound(t *testing.T) {
-	r, _ := NewRing(6, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(6, 3, makeNodes("n1", "n2", "n3"))
 	err := r.RemoveNode("n99")
 	if err == nil {
 		t.Fatal("expected error for non-existent node")
 	}
 }
 
+func TestPreferenceListReturnsNDistinctNodes(t *testing.T) {
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
+
+	plist := r.PreferenceList("user:1")
+	if len(plist) != 3 {
+		t.Fatalf("expected 3 nodes in preference list, got %d", len(plist))
+	}
+
+	seen := make(map[string]bool)
+	for _, n := range plist {
+		if seen[n.NodeID] {
+			t.Fatalf("duplicate node %s in preference list", n.NodeID)
+		}
+		seen[n.NodeID] = true
+	}
+}
+
+func TestPreferenceListFirstNodeIsOwner(t *testing.T) {
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
+
+	owner := r.Lookup("user:1")
+	plist := r.PreferenceList("user:1")
+
+	if plist[0].NodeID != owner.NodeID {
+		t.Fatalf("first node in preference list (%s) != owner (%s)", plist[0].NodeID, owner.NodeID)
+	}
+}
+
 func TestPutGet(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
 	r.Put("user:1", "alice", nil)
 	vals, ok := r.Get("user:1")
-	if !ok || len(vals) != 1 || vals[0].Data != "alice" {
-		t.Fatalf("expected [alice], got %v (ok=%v)", vals, ok)
+	if !ok {
+		t.Fatal("expected key to exist")
+	}
+	// all N nodes have the value, so Get returns N copies
+	found := false
+	for _, v := range vals {
+		if v.Data == "alice" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected to find 'alice' in values, got %v", vals)
 	}
 }
 
 func TestGetMissing(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
 	_, ok := r.Get("nope")
 	if ok {
@@ -177,31 +208,42 @@ func TestGetMissing(t *testing.T) {
 	}
 }
 
-func TestPutRoutesToCorrectNode(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+func TestPutReplicatesToNNodes(t *testing.T) {
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3", "n4"))
 
 	r.Put("user:1", "alice", nil)
 
-	// the value should only exist on the owner node, not the others
-	owner := r.Lookup("user:1")
-	vals, ok := owner.Get("user:1")
-	if !ok || vals[0].Data != "alice" {
-		t.Fatalf("owner node %s missing the value", owner.NodeID)
+	plist := r.PreferenceList("user:1")
+
+	// all N nodes in preference list should have the value
+	for _, n := range plist {
+		vals, ok := n.Get("user:1")
+		if !ok || len(vals) == 0 {
+			t.Fatalf("node %s in preference list missing the value", n.NodeID)
+		}
+		if vals[0].Data != "alice" {
+			t.Fatalf("node %s has wrong data: %s", n.NodeID, vals[0].Data)
+		}
 	}
 
+	// nodes NOT in preference list should not have the value
+	prefSet := make(map[string]bool)
+	for _, n := range plist {
+		prefSet[n.NodeID] = true
+	}
 	for _, n := range r.Nodes {
-		if n.NodeID == owner.NodeID {
+		if prefSet[n.NodeID] {
 			continue
 		}
 		_, ok := n.Get("user:1")
 		if ok {
-			t.Fatalf("non-owner node %s has the value", n.NodeID)
+			t.Fatalf("non-preference node %s has the value", n.NodeID)
 		}
 	}
 }
 
 func TestPutOverwriteVersions(t *testing.T) {
-	r, _ := NewRing(12, makeNodes("n1", "n2", "n3"))
+	r, _ := NewRing(12, 3, makeNodes("n1", "n2", "n3"))
 
 	r.Put("k", "v1", nil)
 
@@ -212,7 +254,14 @@ func TestPutOverwriteVersions(t *testing.T) {
 	r.Put("k", "v2", ctx)
 
 	vals, _ = r.Get("k")
-	if len(vals) != 1 || vals[0].Data != "v2" {
-		t.Fatalf("expected [v2], got %v", vals)
+	found := false
+	for _, v := range vals {
+		if v.Data == "v2" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected v2 in values, got %v", vals)
 	}
 }
