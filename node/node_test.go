@@ -5,7 +5,7 @@ import (
 )
 
 func TestGetMissing(t *testing.T) {
-	n := NewNode("n1")
+	n := NewNode("n1", "localhost:5001")
 	_, ok := n.Get("nope")
 	if ok {
 		t.Fatal("expected missing key")
@@ -13,7 +13,7 @@ func TestGetMissing(t *testing.T) {
 }
 
 func TestPutGet(t *testing.T) {
-	n := NewNode("n1")
+	n := NewNode("n1", "localhost:5001")
 	n.Put("k", "hello", nil) // nil clock = fresh write
 
 	vals, ok := n.Get("k")
@@ -26,7 +26,7 @@ func TestPutGet(t *testing.T) {
 }
 
 func TestPutOverwriteIncrementsVersion(t *testing.T) {
-	n := NewNode("n1")
+	n := NewNode("n1", "localhost:5001")
 	n.Put("k", "v1", nil)
 
 	// get the clock from the first write, pass it as context
@@ -45,8 +45,8 @@ func TestPutOverwriteIncrementsVersion(t *testing.T) {
 }
 
 func TestTwoNodesSameKey(t *testing.T) {
-	n1 := NewNode("n1")
-	n2 := NewNode("n2")
+	n1 := NewNode("n1", "localhost:5001")
+	n2 := NewNode("n2", "localhost:5002")
 
 	n1.Put("k", "from-n1", nil)
 	n2.Put("k", "from-n2", nil)

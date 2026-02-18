@@ -8,12 +8,14 @@ import (
 
 type Node struct {
 	NodeID  string
+	Addr    string
 	Storage *storage.Storage
 }
 
-func NewNode(nodeID string) *Node {
+func NewNode(nodeID string, addr string) *Node {
 	return &Node{
 		NodeID:  nodeID,
+		Addr:    addr,
 		Storage: storage.NewStorage(),
 	}
 }

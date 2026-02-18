@@ -1,6 +1,7 @@
 package ring
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/pixperk/plethora/node"
@@ -9,7 +10,7 @@ import (
 func makeNodes(ids ...string) []*node.Node {
 	nodes := make([]*node.Node, len(ids))
 	for i, id := range ids {
-		nodes[i] = node.NewNode(id)
+		nodes[i] = node.NewNode(id, fmt.Sprintf("localhost:%d", 5001+i))
 	}
 	return nodes
 }
@@ -96,7 +97,7 @@ func TestLookupReturnsValidNode(t *testing.T) {
 func TestAddNode(t *testing.T) {
 	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
 
-	err := r.AddNode(node.NewNode("n4"))
+	err := r.AddNode(node.NewNode("n4", "localhost:5004"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestAddNode(t *testing.T) {
 func TestAddNodeRejectsIndivisibleQ(t *testing.T) {
 	r := newTestRing(t, 6, makeNodes("n1", "n2", "n3"))
 
-	err := r.AddNode(node.NewNode("n4"))
+	err := r.AddNode(node.NewNode("n4", "localhost:5004"))
 	if err == nil {
 		t.Fatal("expected error when Q not divisible by new S")
 	}
