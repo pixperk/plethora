@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/pixperk/plethora/client"
 	"github.com/pixperk/plethora/node"
 	"github.com/pixperk/plethora/types"
 	"github.com/pixperk/plethora/vclock"
@@ -171,11 +172,14 @@ func (r *Ring) Get(key types.Key) ([]types.Value, error) {
 	var allVals []types.Value
 	responses := 0
 	for _, n := range nodes {
-		vals, ok := n.Get(key)
-		if ok {
-			allVals = append(allVals, vals...)
+		vals, found, err := client.RemoteGet(n.Addr, key)
+		if err != nil {
+			continue
 		}
 		responses++
+		if found {
+			allVals = append(allVals, vals...)
+		}
 	}
 	//quorum : if we got responses from fewer than R nodes, we consider the read failed due to insufficient replicas responding. With networking, this would be based on timeouts and error handling, but in this in-memory simulation, we assume all calls succeed.
 	if responses < r.R {
@@ -238,11 +242,13 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 		Clock: clock,
 	}
 
-	// replicate to all N nodes in the preference list
+	// replicate to all N nodes in the preference list via gRPC
 	acks := 0
 	for _, n := range nodes {
-		n.Store(key, value)
-		acks++ // in-process calls always succeed; with networking this would be conditional
+		err := client.RemotePut(n.Addr, key, value)
+		if err == nil {
+			acks++
+		}
 	}
 	if acks < r.W {
 		return fmt.Errorf("quorum not met: got %d acks, need W=%d", acks, r.W)

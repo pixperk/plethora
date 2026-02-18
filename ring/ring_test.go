@@ -2,15 +2,41 @@ package ring
 
 import (
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/pixperk/plethora/node"
+	pb "github.com/pixperk/plethora/proto"
+	"github.com/pixperk/plethora/server"
+	"google.golang.org/grpc"
 )
 
 func makeNodes(ids ...string) []*node.Node {
 	nodes := make([]*node.Node, len(ids))
 	for i, id := range ids {
 		nodes[i] = node.NewNode(id, fmt.Sprintf("localhost:%d", 5001+i))
+	}
+	return nodes
+}
+
+// makeServedNodes creates nodes with OS-assigned ports and starts gRPC servers.
+// Returns the nodes and a cleanup function to stop all servers.
+func makeServedNodes(t *testing.T, ids ...string) []*node.Node {
+	t.Helper()
+	nodes := make([]*node.Node, len(ids))
+	for i, id := range ids {
+		lis, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := lis.Addr().String()
+		n := node.NewNode(id, addr)
+		nodes[i] = n
+
+		grpcServer := grpc.NewServer()
+		pb.RegisterKVServer(grpcServer, server.NewServer(n))
+		go grpcServer.Serve(lis)
+		t.Cleanup(grpcServer.Stop)
 	}
 	return nodes
 }
@@ -193,8 +219,11 @@ func TestPreferenceListFirstNodeIsOwner(t *testing.T) {
 	}
 }
 
+// --- gRPC tests: these start real servers ---
+
 func TestPutGet(t *testing.T) {
-	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
+	nodes := makeServedNodes(t, "n1", "n2", "n3")
+	r := newTestRing(t, 12, nodes)
 
 	if err := r.Put("user:1", "alice", nil); err != nil {
 		t.Fatal(err)
@@ -209,7 +238,8 @@ func TestPutGet(t *testing.T) {
 }
 
 func TestGetMissing(t *testing.T) {
-	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
+	nodes := makeServedNodes(t, "n1", "n2", "n3")
+	r := newTestRing(t, 12, nodes)
 
 	vals, err := r.Get("nope")
 	if err != nil {
@@ -221,12 +251,14 @@ func TestGetMissing(t *testing.T) {
 }
 
 func TestPutReplicatesToNNodes(t *testing.T) {
-	r, _ := NewRing(12, 3, 2, 2, makeNodes("n1", "n2", "n3", "n4"))
+	nodes := makeServedNodes(t, "n1", "n2", "n3", "n4")
+	r, _ := NewRing(12, 3, 2, 2, nodes)
 
 	r.Put("user:1", "alice", nil)
 
 	plist := r.PreferenceList("user:1")
 
+	// verify preference list nodes have the value (check via local storage)
 	for _, n := range plist {
 		vals, ok := n.Get("user:1")
 		if !ok || len(vals) == 0 {
@@ -237,6 +269,7 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 		}
 	}
 
+	// verify non-preference nodes don't have the value
 	prefSet := make(map[string]bool)
 	for _, n := range plist {
 		prefSet[n.NodeID] = true
@@ -253,7 +286,8 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 }
 
 func TestPutOverwriteVersions(t *testing.T) {
-	r := newTestRing(t, 12, makeNodes("n1", "n2", "n3"))
+	nodes := makeServedNodes(t, "n1", "n2", "n3")
+	r := newTestRing(t, 12, nodes)
 
 	r.Put("k", "v1", nil)
 
