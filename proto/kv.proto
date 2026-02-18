@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package kv;
+
+option go_package = "github.com/pixperk/plethora/proto";
+
+message VectorClock {
+  map<string, uint64> entries = 1;
+}
+
+message Value {
+  string data = 1;
+  VectorClock clock = 2;
+}
+
+message PutRequest {
+  string key = 1;
+  Value value = 2;
+}
+
+message PutResponse {}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  repeated Value values = 1;
+  bool found = 2;
+}
+
+service KV {
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+}
