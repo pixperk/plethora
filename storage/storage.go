@@ -63,3 +63,14 @@ func (s *Storage) Put(key types.Key, val types.Value) {
 	// add the new value alongside any surviving siblings
 	s.data[key] = append(kept, val)
 }
+
+// returns a list of all keys in the store.
+func (s *Storage) Keys() []types.Key {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	keys := make([]types.Key, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	return keys
+}
