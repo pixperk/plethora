@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"crypto/md5"
 	"sync"
 
+	"github.com/pixperk/plethora/merkle"
 	"github.com/pixperk/plethora/types"
 )
 
@@ -73,4 +75,22 @@ func (s *Storage) Keys() []types.Key {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func (s *Storage) KeyHashes() []merkle.KeyHash {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	out := make([]merkle.KeyHash, 0, len(s.data))
+	for k, vals := range s.data {
+		// hash the key + all its values together
+		h := md5.New()
+		h.Write([]byte(k))
+		for _, v := range vals {
+			h.Write([]byte(v.Data))
+		}
+		var hash [16]byte
+		copy(hash[:], h.Sum(nil))
+		out = append(out, merkle.KeyHash{Key: string(k), Hash: hash})
+	}
+	return out
 }

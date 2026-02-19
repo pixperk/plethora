@@ -39,9 +39,32 @@ message GetResponse {
   bool found = 2;
 }
 
+// anti-entropy: exchange key hashes to detect divergence via merkle trees
+message KeyHashEntry {
+  string key = 1;
+  bytes hash = 2; // 16-byte md5 hash
+}
+
+message GetKeyHashesRequest {}
+
+message GetKeyHashesResponse {
+  repeated KeyHashEntry entries = 1;
+}
+
+// anti-entropy: fetch actual values for divergent keys
+message SyncKeysRequest {
+  repeated string keys = 1;
+}
+
+message SyncKeysResponse {
+  map<string, GetResponse> data = 1; // key -> values for that key
+}
+
 service KV {
   rpc Put(PutRequest) returns (PutResponse);
   rpc Get(GetRequest) returns (GetResponse);
   rpc HintedPut(HintedPutRequest) returns (PutResponse);
   rpc Heartbeat(stream HeartbeatMessage) returns (stream HeartbeatMessage);
+  rpc GetKeyHashes(GetKeyHashesRequest) returns (GetKeyHashesResponse);
+  rpc SyncKeys(SyncKeysRequest) returns (SyncKeysResponse);
 }

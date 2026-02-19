@@ -110,6 +110,31 @@ func (s *Server) Heartbeat(stream pb.KV_HeartbeatServer) error {
 
 }
 
+// GetKeyHashes returns the key-hash pairs from this node's storage.
+// The caller builds merkle trees locally and diffs them to find divergent keys.
+func (s *Server) GetKeyHashes(_ context.Context, _ *pb.GetKeyHashesRequest) (*pb.GetKeyHashesResponse, error) {
+	kh := s.node.Storage.KeyHashes()
+	entries := make([]*pb.KeyHashEntry, len(kh))
+	for i, e := range kh {
+		entries[i] = &pb.KeyHashEntry{Key: e.Key, Hash: e.Hash[:]}
+	}
+	return &pb.GetKeyHashesResponse{Entries: entries}, nil
+}
+
+// SyncKeys returns the actual values for the requested keys.
+// Called after a merkle diff identifies which keys diverged.
+func (s *Server) SyncKeys(_ context.Context, req *pb.SyncKeysRequest) (*pb.SyncKeysResponse, error) {
+	data := make(map[string]*pb.GetResponse, len(req.Keys))
+	for _, key := range req.Keys {
+		vals, found := s.node.Get(types.Key(key))
+		data[key] = &pb.GetResponse{
+			Values: toProtoValues(vals),
+			Found:  found,
+		}
+	}
+	return &pb.SyncKeysResponse{Data: data}, nil
+}
+
 // runHandoff periodically checks for any hints that need to be forwarded to their target nodes and attempts to send them.
 func (s *Server) runHandoff() {
 	ticker := time.NewTicker(5 * time.Second)
