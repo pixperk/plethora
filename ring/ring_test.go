@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/pixperk/plethora/node"
 	pb "github.com/pixperk/plethora/proto"
@@ -36,10 +37,10 @@ func makeServedNodes(t *testing.T, ids ...string) []*node.Node {
 		nodes[i] = node.NewNode(id, lis.Addr().String())
 	}
 
-	// phase 2: start servers with full peer list
+	// phase 2: start servers with gossip seeds
 	for i, n := range nodes {
 		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes))
+		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes, nil, 10*time.Second))
 		go grpcServer.Serve(listeners[i])
 		t.Cleanup(grpcServer.Stop)
 	}
@@ -308,7 +309,8 @@ func TestSloppyQuorumHintedHandoff(t *testing.T) {
 	}
 	for i, n := range nodes {
 		grpcServers[i] = grpc.NewServer()
-		pb.RegisterKVServer(grpcServers[i], server.NewServer(n, nodes))
+		srv := server.NewServer(n, nodes, nil, 10*time.Second)
+		pb.RegisterKVServer(grpcServers[i], srv)
 		go grpcServers[i].Serve(listeners[i])
 		t.Cleanup(grpcServers[i].Stop)
 	}

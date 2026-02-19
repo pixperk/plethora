@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/pixperk/plethora/client"
@@ -21,13 +20,6 @@ type Server struct {
 	pb.UnimplementedKVServer
 	node *node.Node
 
-	//hinted handoff
-	peers    map[string]string //nodeID -> addr of peer nodes for hint forwarding
-	addrToID map[string]string //addr -> nodeID for reverse lookup when receiving hints
-	alive    map[string]bool   //nodeID -> alive status of peer nodes
-
-	aliveMu sync.RWMutex
-
 	// anti-entropy: nodes that share key ranges with this node
 	replicaPeers []*node.Node
 
@@ -35,38 +27,24 @@ type Server struct {
 	members *gossip.MemberList
 }
 
-func NewServer(n *node.Node, allNodes []*node.Node) *Server {
-	peers := make(map[string]string)
-	addrToID := make(map[string]string)
-	alive := make(map[string]bool)
-	for _, node := range allNodes {
-		if node.NodeID == n.NodeID {
-			continue
+func NewServer(n *node.Node, seeds []*node.Node, replicaPeers []*node.Node, tFail time.Duration) *Server {
+	m := gossip.NewMemberList(n.NodeID, n.Addr, tFail)
+	for _, s := range seeds {
+		if s.NodeID != n.NodeID {
+			m.AddSeed(s.NodeID, s.Addr)
 		}
-		peers[node.NodeID] = node.Addr
-		addrToID[node.Addr] = node.NodeID
-		alive[node.NodeID] = true // assume all nodes start alive; in a real system we'd want a more robust health check
 	}
-
 	return &Server{
-		node:     n,
-		peers:    peers,
-		addrToID: addrToID,
-		alive:    alive,
+		node:         n,
+		members:      m,
+		replicaPeers: replicaPeers,
 	}
 }
 
-// SetReplicaPeers sets the nodes this server should sync with during anti-entropy.
-func (s *Server) SetReplicaPeers(peers []*node.Node) {
-	s.replicaPeers = peers
-}
-
-// NodeIsAlive reports whether a peer node is reachable according to this
-// server's heartbeat tracker. Suitable for use as ring.IsAlive.
+// NodeIsAlive reports whether a node is reachable according to gossip.
+// Suitable for use as ring.IsAlive.
 func (s *Server) NodeIsAlive(nodeID string) bool {
-	s.aliveMu.RLock()
-	defer s.aliveMu.RUnlock()
-	return s.alive[nodeID]
+	return s.members.IsAlive(nodeID)
 }
 
 func (s *Server) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
@@ -100,6 +78,7 @@ func (s *Server) Start() error {
 	grpcServer := grpc.NewServer()
 	pb.RegisterKVServer(grpcServer, s)
 
+	go s.runGossip()
 	go s.runHandoff()
 	go s.runAntiEntropy()
 
@@ -108,7 +87,6 @@ func (s *Server) Start() error {
 
 // Gossip receives a peer's membership list, merges it, and responds with ours.
 func (s *Server) Gossip(_ context.Context, req *pb.GossipRequest) (*pb.GossipResponse, error) {
-	// convert proto to gossip entries and merge
 	remote := make([]gossip.MemberEntry, len(req.Members))
 	for i, m := range req.Members {
 		remote[i] = gossip.MemberEntry{
@@ -119,7 +97,6 @@ func (s *Server) Gossip(_ context.Context, req *pb.GossipRequest) (*pb.GossipRes
 	}
 	s.members.Merge(remote)
 
-	// respond with our full list so the sender can merge too
 	entries := s.members.Entries()
 	resp := make([]*pb.GossipMember, len(entries))
 	for i, e := range entries {
@@ -157,24 +134,62 @@ func (s *Server) SyncKeys(_ context.Context, req *pb.SyncKeysRequest) (*pb.SyncK
 	return &pb.SyncKeysResponse{Data: data}, nil
 }
 
+// runGossip periodically ticks the local heartbeat, picks a random peer,
+// exchanges membership lists, and merges the response.
+func (s *Server) runGossip() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.members.Tick()
+
+		peer, ok := s.members.RandomPeer()
+		if !ok {
+			continue
+		}
+
+		// build proto member list from local state
+		entries := s.members.Entries()
+		protoMembers := make([]*pb.GossipMember, len(entries))
+		for i, e := range entries {
+			protoMembers[i] = &pb.GossipMember{
+				NodeId:    e.NodeID,
+				Addr:      e.Addr,
+				Heartbeat: e.Heartbeat,
+			}
+		}
+
+		// exchange with peer
+		resp, err := client.RemoteGossip(peer.Addr, protoMembers)
+		if err != nil {
+			continue
+		}
+
+		// merge peer's response
+		remote := make([]gossip.MemberEntry, len(resp))
+		for i, m := range resp {
+			remote[i] = gossip.MemberEntry{
+				NodeID:    m.NodeId,
+				Addr:      m.Addr,
+				Heartbeat: m.Heartbeat,
+			}
+		}
+		s.members.Merge(remote)
+	}
+}
+
 // runHandoff periodically checks for any hints that need to be forwarded to their target nodes and attempts to send them.
 func (s *Server) runHandoff() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.aliveMu.RLock()
-		for nodeID, up := range s.alive {
-			if !up {
-				continue
-			}
-			addr := s.peers[nodeID]
-			items := s.node.DrainHints(nodeID)
+		for _, m := range s.members.Alive() {
+			items := s.node.DrainHints(m.NodeID)
 			for _, item := range items {
-				client.RemotePut(addr, item.Key, item.Value)
+				client.RemotePut(m.Addr, item.Key, item.Value)
 			}
 		}
-		s.aliveMu.RUnlock()
 	}
 }
 
@@ -194,11 +209,7 @@ func (s *Server) runAntiEntropy() {
 		peer := s.replicaPeers[peerIdx%len(s.replicaPeers)]
 		peerIdx++
 
-		// check if peer is alive
-		s.aliveMu.RLock()
-		up := s.alive[peer.NodeID]
-		s.aliveMu.RUnlock()
-		if !up {
+		if !s.members.IsAlive(peer.NodeID) {
 			continue
 		}
 

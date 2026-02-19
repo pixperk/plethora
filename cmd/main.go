@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/pixperk/plethora/node"
 	pb "github.com/pixperk/plethora/proto"
@@ -19,6 +20,7 @@ func main() {
 	const N = 3
 	const R = 2
 	const W = 2
+	const tFail = 10 * time.Second
 
 	nodes := make([]*node.Node, numNodes)
 	listeners := make([]net.Listener, numNodes)
@@ -30,9 +32,15 @@ func main() {
 		listeners[i] = lis
 		nodes[i] = node.NewNode(fmt.Sprintf("node-%d", i+1), lis.Addr().String())
 	}
+
+	r, err := ring.NewRing(Q, N, R, W, nodes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	servers := make([]*server.Server, numNodes)
 	for i, n := range nodes {
-		srv := server.NewServer(n, nodes)
+		srv := server.NewServer(n, nodes, r.ReplicaPeers(n.NodeID), tFail)
 		servers[i] = srv
 		grpcServer := grpc.NewServer()
 		pb.RegisterKVServer(grpcServer, srv)
@@ -40,17 +48,7 @@ func main() {
 		fmt.Printf("[BOOT] %s listening on %s\n", n.NodeID, n.Addr)
 	}
 
-	r, err := ring.NewRing(Q, N, R, W, nodes)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// wire replica peers for anti-entropy
-	for i, n := range nodes {
-		servers[i].SetReplicaPeers(r.ReplicaPeers(n.NodeID))
-	}
-
-	// use first server's health view for the ring's sloppy quorum decisions
+	// use first server's gossip view for the ring's sloppy quorum decisions
 	r.IsAlive = servers[0].NodeIsAlive
 
 	fmt.Printf("\n[RING] Q=%d N=%d R=%d W=%d nodes=%d\n\n", Q, N, R, W, numNodes)
