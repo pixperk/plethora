@@ -154,16 +154,25 @@ graph LR
     put -->|"hinted put (target=node 2)"| nodeD
 ```
 
-the preference list walks the ring clockwise from the key's partition and collects N distinct nodes (skipping duplicates since multiple consecutive partitions might belong to the same node).
+the preference list is health-aware and does all the sloppy quorum logic in one place using a two-pass algorithm:
 
-**put flow (sloppy quorum):**
-1. coordinator (first node in preference list) copies the client's context clock, increments its own entry, builds the value.
-2. tries to replicate to all N nodes via grpc.
-3. if a preferred node is unreachable, finds the next node in the ring not in the preference list and sends a hinted put instead. the stand-in stores the value in its hint store tagged with the target node id.
-4. counts acks (both direct puts and hinted puts). if acks >= W, success. otherwise quorum failure.
+1. **first pass**: walk the ring clockwise from the key's partition and find the N ideal preferred nodes, ignoring health. these are the nodes that *should* own replicas.
+2. **second pass**: walk the ring again. for each node encountered:
+   - preferred + alive: add as a regular target.
+   - preferred + dead: skip, queue it as needing coverage.
+   - non-preferred + alive + dead queue non-empty: add as a stand-in covering the first uncovered dead preferred node.
+
+the result is a `[]Target` where each target is either `{Node, HintFor:""}` (preferred node, regular put) or `{Node, HintFor:"node-3"}` (stand-in, hinted put tagged with who it's covering for). put just iterates the list.
+
+`ring.IsAlive` is an injectable callback (`func(nodeID string) bool`) that defaults to all-alive if not set. in the running system, it's wired to a server's heartbeat-tracked alive map.
+
+**put flow:**
+1. coordinator (first target) copies the client's context clock, increments its own entry, builds the value.
+2. iterates all targets: `HintFor==""` means `RemotePut`, `HintFor!=""` means `RemoteHintedPut` tagged with the dead preferred node.
+3. counts acks. if acks >= W, success. otherwise quorum failure.
 
 **get flow:**
-1. reads from all N nodes in the preference list via grpc.
+1. reads from all N targets in the preference list via grpc.
 2. counts responses. if responses < R, quorum failure.
 3. deduplicates: for every pair of values, if one's clock descends from the other, drop the ancestor. if clocks are identical, keep only one copy. what remains are causally distinct versions (siblings).
 
