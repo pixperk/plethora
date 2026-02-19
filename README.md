@@ -1,6 +1,6 @@
 # plethora
 
-a distributed key-value store built from scratch in go, following the amazon dynamo paper (decandia et al., 2007). uses strategy 3 consistent hashing with fixed equal-sized partitions, vector clocks for conflict detection, quorum-based replication, and grpc for inter-node communication.
+a distributed key-value store built from scratch in go, following the amazon dynamo paper (decandia et al., 2007). uses strategy 3 consistent hashing with fixed equal-sized partitions, vector clocks for conflict detection, sloppy quorum with hinted handoff for high availability, and grpc for inter-node communication.
 
 built bottom-up, one layer at a time.
 
@@ -15,7 +15,7 @@ graph TB
         direction TB
         hash[md5 hash + partition lookup]
         pref[preference list: N distinct nodes]
-        quorum[quorum check: R reads, W writes]
+        quorum[sloppy quorum: R reads, W writes]
         dedup[dedup via vector clocks]
         hash --> pref --> quorum --> dedup
     end
@@ -24,18 +24,25 @@ graph TB
         direction LR
         subgraph n1[node 1]
             s1[server] --> st1[storage]
+            s1 --> h1[hint store]
+            s1 --> hb1[heartbeat]
         end
         subgraph n2[node 2]
             s2[server] --> st2[storage]
+            s2 --> h2[hint store]
+            s2 --> hb2[heartbeat]
         end
-        subgraph n3[node 3]
+        subgraph n3["node 3 (down)"]
             s3[server] --> st3[storage]
         end
     end
 
     ring -->|grpc put/get| n1
     ring -->|grpc put/get| n2
-    ring -->|grpc put/get| n3
+    ring -.->|"fail: node down"| n3
+    ring -->|"hinted put (target=node 3)"| n1
+
+    n1 -.->|"handoff when node 3 recovers"| n3
 ```
 
 ## layers
@@ -54,12 +61,15 @@ this means storage never loses data silently. conflicts are preserved and bubble
 
 ### layer 2: node
 
-wraps storage with identity. each node has an id, a network address, and its own storage instance. two write paths:
+wraps storage with identity. each node has an id, a network address, its own storage instance, and a hint store for hinted handoff. three write paths:
 
-- `put(key, val, ctx)` is the coordinator path. takes a raw string value and an optional vector clock context from a previous read. copies the clock, increments its own node id entry, builds a `types.Value`, and writes to storage.
+- `put(key, val, ctx)` is the standalone coordinator path. takes a raw string value and an optional vector clock context from a previous read. copies the clock, increments its own node id entry, builds a `types.Value`, and writes to storage. used for testing only, the ring has its own coordinator logic.
 - `store(key, value)` is the replica path. accepts a fully built value with clock already set. just writes it to storage, no clock mutation.
+- `storeHint(targetNodeID, key, value)` stores a value in the hint store (not in main storage) tagged with the node it was originally meant for. the hint store is a separate `map[string][]HintedItem` protected by its own mutex, so hinted data never shows up in gets.
 
-this separation matters because the ring coordinator builds the clock once, then replicates the same value to N nodes. replicas shouldn't touch the clock again.
+`drainHints(targetNodeID)` atomically removes and returns all hints for a given node, used during handoff when the target recovers.
+
+this separation matters because the ring coordinator builds the clock once, then replicates the same value to N nodes. replicas shouldn't touch the clock again. hinted data lives outside main storage entirely.
 
 ### layer 3: vector clocks
 
@@ -118,9 +128,9 @@ how it works:
 - to look up a key: `md5(key) % Q` gives the partition index, the partition's token gives the owner node id, the node map gives the node pointer in O(1).
 - when a node joins or leaves, partitions are reassigned with the same round-robin. no data moves (yet), just ownership pointers change.
 
-### layer 5: replication and quorum
+### layer 5: replication and sloppy quorum
 
-a single owner isn't enough. we replicate each key to N nodes using a preference list.
+a single owner isn't enough. we replicate each key to N nodes using a preference list, with sloppy quorum for availability when nodes go down.
 
 ```mermaid
 graph LR
@@ -128,27 +138,33 @@ graph LR
         direction LR
         p5["partition 5 (owner)"] --> nodeA["node 3"]
         p0["partition 0"] --> nodeB["node 1"]
-        p1["partition 1"] --> nodeC["node 2"]
+        p1["partition 1"] --> nodeC["node 2 (down)"]
+    end
+
+    subgraph "sloppy quorum fallback"
+        nodeD["node 4 (stand-in)"]
     end
 
     put["put(k, v)"] --> nodeA
     put --> nodeB
-    put --> nodeC
+    put -.->|fail| nodeC
+    put -->|"hinted put (target=node 2)"| nodeD
 ```
 
 the preference list walks the ring clockwise from the key's partition and collects N distinct nodes (skipping duplicates since multiple consecutive partitions might belong to the same node).
 
-**put flow:**
+**put flow (sloppy quorum):**
 1. coordinator (first node in preference list) copies the client's context clock, increments its own entry, builds the value.
-2. replicates the same value to all N nodes via grpc.
-3. counts acks. if acks >= W, success. otherwise quorum failure.
+2. tries to replicate to all N nodes via grpc.
+3. if a preferred node is unreachable, finds the next node in the ring not in the preference list and sends a hinted put instead. the stand-in stores the value in its hint store tagged with the target node id.
+4. counts acks (both direct puts and hinted puts). if acks >= W, success. otherwise quorum failure.
 
 **get flow:**
 1. reads from all N nodes in the preference list via grpc.
 2. counts responses. if responses < R, quorum failure.
 3. deduplicates: for every pair of values, if one's clock descends from the other, drop the ancestor. if clocks are identical, keep only one copy. what remains are causally distinct versions (siblings).
 
-**quorum guarantee:** R + W > N ensures at least one node in the read set has the latest write. the demo uses N=3, R=2, W=2.
+**quorum guarantee:** R + W > N ensures at least one node in the read set has the latest write. sloppy quorum relaxes "which W nodes" to include stand-ins, trading consistency for availability (the dynamo tradeoff). the demo uses N=3, R=2, W=2.
 
 ### layer 6: networking (grpc)
 
@@ -159,14 +175,41 @@ proto/kv.proto defines:
     service KV {
         rpc Put(PutRequest) returns (PutResponse)
         rpc Get(GetRequest) returns (GetResponse)
+        rpc HintedPut(HintedPutRequest) returns (PutResponse)
+        rpc Heartbeat(stream HeartbeatMessage) returns (stream HeartbeatMessage)
     }
 ```
 
-- **server**: each node runs a grpc server. the Put handler calls `node.Store()` (replica path). the Get handler calls `node.Get()`. thin wrappers with proto-to-types conversion.
-- **client**: two functions, `RemotePut` and `RemoteGet`. dial the node's address, make the rpc, convert proto back to types.
-- **ring**: `ring.Put` and `ring.Get` were swapped from direct `node.Store()`/`node.Get()` calls to `client.RemotePut()`/`client.RemoteGet()` calls. the coordinator logic (clock building, quorum checking, dedup) stayed exactly the same.
+- **server**: each node runs a grpc server. Put calls `node.Store()`, Get calls `node.Get()`, HintedPut calls `node.StoreHint()`. the Heartbeat handler is a bidirectional stream for failure detection. each server also tracks a peers map (nodeID -> addr) and an alive map updated by heartbeats.
+- **client**: `RemotePut`, `RemoteGet`, and `RemoteHintedPut`. dial the node's address, make the rpc, convert proto back to types.
+- **ring**: `ring.Put` and `ring.Get` use grpc client calls. on put failure, the ring falls back to `RemoteHintedPut` on a stand-in node.
 
-the ring tests start real grpc servers on random OS-assigned ports and exercise the full put/get path over the wire.
+the ring tests start real grpc servers on random OS-assigned ports and exercise the full put/get path including sloppy quorum.
+
+### layer 7: hinted handoff
+
+when a preferred node goes down, the stand-in holds hints temporarily. the handoff mechanism gets them back to the right place.
+
+```mermaid
+sequenceDiagram
+    participant R as ring coordinator
+    participant S as stand-in node
+    participant T as target node (down)
+
+    R->>S: HintedPut(key, val, target=T)
+    S->>S: storeHint(T, key, val)
+    note over T: node recovers
+    T->>S: heartbeat stream opens
+    S->>S: alive[T] = true
+    note over S: handoff ticker fires
+    S->>S: drainHints(T)
+    S->>T: RemotePut(key, val)
+```
+
+- each server runs a background `runHandoff` goroutine on a 5-second ticker.
+- on each tick, it iterates the alive map. for every node marked alive, it drains all pending hints and forwards them via `RemotePut`.
+- the heartbeat is a bidirectional grpc stream. as long as messages flow, the peer is alive. when the stream breaks (recv error), the peer is marked dead.
+- hints live in the node's `HintStore`, a `map[string][]HintedItem` separate from main storage. they never show up in gets. `drainHints` atomically removes and returns all items for a target, so each hint is forwarded exactly once.
 
 ## project structure
 
@@ -175,10 +218,10 @@ plethora/
     types/       core types: Key, Value (with vector clock)
     vclock/      vector clock implementation
     storage/     thread-safe versioned kv store
-    node/        node with identity, storage, and grpc address
-    ring/        consistent hash ring, replication, quorum, dedup
-    server/      grpc server wrapping a node
-    client/      grpc client helpers (RemotePut, RemoteGet)
+    node/        node with identity, storage, hint store, peer map builders
+    ring/        consistent hash ring, sloppy quorum, replication, dedup
+    server/      grpc server: put, get, hinted put, heartbeat, handoff goroutine
+    client/      grpc client helpers (RemotePut, RemoteGet, RemoteHintedPut)
     proto/       protobuf definition and generated code
     cmd/         demo: boots 10 nodes, puts and gets over grpc
 ```
@@ -186,7 +229,7 @@ plethora/
 ## running it
 
 ```bash
-go test ./...         # run all tests (28 total, ring tests start real grpc servers)
+go test ./...         # run all tests (29 total, includes sloppy quorum test)
 go run ./cmd/         # boot 10 nodes on random ports, run demo puts and gets
 ```
 
@@ -199,9 +242,11 @@ go run ./cmd/         # boot 10 nodes on random ports, run demo puts and gets
 | replication (preference list) | done |
 | quorum (R, W, N) | done |
 | grpc networking | done |
-| sloppy quorum + hinted handoff | next |
+| sloppy quorum | done |
+| hinted handoff | done |
+| heartbeat failure detection (bidir stream) | done |
 | merkle trees (anti-entropy sync) | next |
-| gossip protocol (failure detection + membership) | next |
+| gossip protocol (membership) | next |
 
 ## config
 
