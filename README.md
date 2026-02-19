@@ -1,6 +1,6 @@
 # plethora
 
-a distributed key-value store built from scratch in go, following the amazon dynamo paper (decandia et al., 2007). uses strategy 3 consistent hashing with fixed equal-sized partitions, vector clocks for conflict detection, sloppy quorum with hinted handoff for high availability, and grpc for inter-node communication.
+a distributed key-value store built from scratch in go, following the amazon dynamo paper (decandia et al., 2007). uses strategy 3 consistent hashing with fixed equal-sized partitions, vector clocks for conflict detection, sloppy quorum with hinted handoff for high availability, merkle tree anti-entropy for replica synchronization, and grpc for inter-node communication.
 
 built bottom-up, one layer at a time.
 
@@ -26,11 +26,13 @@ graph TB
             s1[server] --> st1[storage]
             s1 --> h1[hint store]
             s1 --> hb1[heartbeat]
+            st1 --> mt1[merkle tree]
         end
         subgraph n2[node 2]
             s2[server] --> st2[storage]
             s2 --> h2[hint store]
             s2 --> hb2[heartbeat]
+            st2 --> mt2[merkle tree]
         end
         subgraph n3["node 3 (down)"]
             s3[server] --> st3[storage]
@@ -43,6 +45,7 @@ graph TB
     ring -->|"hinted put (target=node 3)"| n1
 
     n1 -.->|"handoff when node 3 recovers"| n3
+    n1 <-.->|"anti-entropy sync (merkle diff)"| n2
 ```
 
 ## layers
@@ -177,12 +180,14 @@ proto/kv.proto defines:
         rpc Get(GetRequest) returns (GetResponse)
         rpc HintedPut(HintedPutRequest) returns (PutResponse)
         rpc Heartbeat(stream HeartbeatMessage) returns (stream HeartbeatMessage)
+        rpc GetKeyHashes(GetKeyHashesRequest) returns (GetKeyHashesResponse)
+        rpc SyncKeys(SyncKeysRequest) returns (SyncKeysResponse)
     }
 ```
 
-- **server**: each node runs a grpc server. Put calls `node.Store()`, Get calls `node.Get()`, HintedPut calls `node.StoreHint()`. the Heartbeat handler is a bidirectional stream for failure detection. each server also tracks a peers map (nodeID -> addr) and an alive map updated by heartbeats.
-- **client**: `RemotePut`, `RemoteGet`, and `RemoteHintedPut`. dial the node's address, make the rpc, convert proto back to types.
-- **ring**: `ring.Put` and `ring.Get` use grpc client calls. on put failure, the ring falls back to `RemoteHintedPut` on a stand-in node.
+- **server**: each node runs a grpc server. Put calls `node.Store()`, Get calls `node.Get()`, HintedPut calls `node.StoreHint()`. the Heartbeat handler is a bidirectional stream for failure detection. GetKeyHashes returns the node's key-hash pairs for merkle tree comparison. SyncKeys returns actual values for a set of keys. each server also tracks a peers map (nodeID -> addr), an alive map updated by heartbeats, and a replica peers list for anti-entropy.
+- **client**: `RemotePut`, `RemoteGet`, `RemoteHintedPut`, `RemoteGetKeyHashes`, and `RemoteSyncKeys`. dial the node's address, make the rpc, convert proto back to types.
+- **ring**: `ring.Put` and `ring.Get` use grpc client calls. on put failure, the ring falls back to `RemoteHintedPut` on a stand-in node. `ReplicaPeers` computes which nodes share key ranges for anti-entropy.
 
 the ring tests start real grpc servers on random OS-assigned ports and exercise the full put/get path including sloppy quorum.
 
@@ -211,17 +216,59 @@ sequenceDiagram
 - the heartbeat is a bidirectional grpc stream. as long as messages flow, the peer is alive. when the stream breaks (recv error), the peer is marked dead.
 - hints live in the node's `HintStore`, a `map[string][]HintedItem` separate from main storage. they never show up in gets. `drainHints` atomically removes and returns all items for a target, so each hint is forwarded exactly once.
 
+### layer 8: merkle trees (anti-entropy sync)
+
+hinted handoff handles temporary failures, but what about replicas that silently drift apart? missed writes, partial failures, bugs. anti-entropy catches everything else.
+
+```mermaid
+sequenceDiagram
+    participant A as node 1 (anti-entropy tick)
+    participant B as node 2 (replica peer)
+
+    note over A: 30s ticker fires
+    A->>B: GetKeyHashes()
+    B->>B: storage.KeyHashes()
+    B-->>A: []{key, md5(key+values)}
+
+    note over A: build both merkle trees locally
+    A->>A: localTree = node.MerkleTree()
+    A->>A: peerTree = merkle.Build(peerHashes)
+    A->>A: diffKeys = merkle.Diff(local, peer)
+
+    alt roots match
+        note over A: in sync, done
+    else roots differ
+        A->>B: SyncKeys(diffKeys)
+        B-->>A: map[key][]Value
+        A->>A: store each value (vclock handles conflicts)
+    end
+```
+
+the merkle tree is a binary hash tree built bottom-up from sorted key-hash pairs:
+
+1. each leaf is a key hashed with all its values: `md5(key + value1 + value2 + ...)`.
+2. entries are sorted by key for determinism, padded to the next power of 2.
+3. parent hash = `md5(left.hash + right.hash)`, merged bottom-up to a single root.
+4. if two trees have the same root hash, all data is identical. if roots differ, walk down to find exactly which leaves diverged in O(log n) comparisons instead of O(n).
+
+the node caches its merkle tree with a dirty flag. every write marks it dirty; `MerkleTree()` rebuilds lazily only when someone asks for it after data changed.
+
+anti-entropy only syncs with **replica peers**, nodes that share at least one key range. `ring.ReplicaPeers(nodeID)` walks all partitions and collects nodes that appear in the same preference lists. each server round-robins through its replica peers, one per tick, so every peer gets checked periodically.
+
+the merkle tree never goes over the wire. only flat key-hash pairs and actual values do. the tree is a local optimization to narrow down divergence efficiently.
+
 ## project structure
 
 ```
 plethora/
     types/       core types: Key, Value (with vector clock)
     vclock/      vector clock implementation
-    storage/     thread-safe versioned kv store
-    node/        node with identity, storage, hint store, peer map builders
-    ring/        consistent hash ring, sloppy quorum, replication, dedup
-    server/      grpc server: put, get, hinted put, heartbeat, handoff goroutine
-    client/      grpc client helpers (RemotePut, RemoteGet, RemoteHintedPut)
+    storage/     thread-safe versioned kv store, KeyHashes for merkle trees
+    node/        node with identity, storage, hint store, cached merkle tree
+    merkle/      merkle tree: Build, Diff, collectKeys
+    ring/        consistent hash ring, sloppy quorum, replication, dedup, ReplicaPeers
+    server/      grpc server: put, get, hinted put, heartbeat, handoff, anti-entropy
+    client/      grpc client helpers (RemotePut, RemoteGet, RemoteHintedPut, RemoteGetKeyHashes, RemoteSyncKeys)
     proto/       protobuf definition and generated code
     cmd/         demo: boots 10 nodes, puts and gets over grpc
 ```
@@ -245,7 +292,7 @@ go run ./cmd/         # boot 10 nodes on random ports, run demo puts and gets
 | sloppy quorum | done |
 | hinted handoff | done |
 | heartbeat failure detection (bidir stream) | done |
-| merkle trees (anti-entropy sync) | next |
+| merkle trees (anti-entropy sync) | done |
 | gossip protocol (membership) | next |
 
 ## config
