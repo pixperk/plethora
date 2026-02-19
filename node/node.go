@@ -1,22 +1,35 @@
 package node
 
 import (
+	"sync"
+
 	"github.com/pixperk/plethora/storage"
 	"github.com/pixperk/plethora/types"
 	"github.com/pixperk/plethora/vclock"
 )
 
+type HintedItem struct {
+	Key   types.Key
+	Value types.Value
+}
+
+type Hints map[string][]HintedItem // targetNodeID -> list of hinted items for that node
+
 type Node struct {
 	NodeID  string
 	Addr    string
 	Storage *storage.Storage
+
+	hintLock  sync.Mutex
+	HintStore Hints
 }
 
 func NewNode(nodeID string, addr string) *Node {
 	return &Node{
-		NodeID:  nodeID,
-		Addr:    addr,
-		Storage: storage.NewStorage(),
+		NodeID:    nodeID,
+		Addr:      addr,
+		Storage:   storage.NewStorage(),
+		HintStore: make(Hints),
 	}
 }
 
@@ -24,8 +37,8 @@ func (n *Node) Get(key types.Key) ([]types.Value, bool) {
 	return n.Storage.Get(key)
 }
 
-// Put accepts a context clock from a previous Get (nil for fresh writes).
-// It copies the clock, increments this node's entry, and writes to storage.
+// Put is the single-node write path for standalone conflict resolution testing.
+// Not used by the ring; the ring coordinator builds the clock itself and calls Store.
 func (n *Node) Put(key types.Key, val string, ctx vclock.VClock) {
 	var clock vclock.VClock
 	if ctx == nil {
@@ -47,4 +60,18 @@ func (n *Node) Put(key types.Key, val string, ctx vclock.VClock) {
 // Used by the ring coordinator to replicate an already-prepared value to nodes.
 func (n *Node) Store(key types.Key, val types.Value) {
 	n.Storage.Put(key, val)
+}
+
+func (n *Node) StoreHint(targetNodeID string, key types.Key, val types.Value) {
+	n.hintLock.Lock()
+	defer n.hintLock.Unlock()
+	n.HintStore[targetNodeID] = append(n.HintStore[targetNodeID], HintedItem{Key: key, Value: val})
+}
+
+func (n *Node) DrainHints(targetNodeID string) []HintedItem {
+	n.hintLock.Lock()
+	defer n.hintLock.Unlock()
+	items := n.HintStore[targetNodeID]
+	delete(n.HintStore, targetNodeID)
+	return items
 }
