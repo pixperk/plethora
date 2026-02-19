@@ -19,8 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KV_Put_FullMethodName = "/kv.KV/Put"
-	KV_Get_FullMethodName = "/kv.KV/Get"
+	KV_Put_FullMethodName       = "/kv.KV/Put"
+	KV_Get_FullMethodName       = "/kv.KV/Get"
+	KV_HintedPut_FullMethodName = "/kv.KV/HintedPut"
+	KV_Heartbeat_FullMethodName = "/kv.KV/Heartbeat"
 )
 
 // KVClient is the client API for KV service.
@@ -29,6 +31,8 @@ const (
 type KVClient interface {
 	Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*PutResponse, error)
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	HintedPut(ctx context.Context, in *HintedPutRequest, opts ...grpc.CallOption) (*PutResponse, error)
+	Heartbeat(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[HeartbeatMessage, HeartbeatMessage], error)
 }
 
 type kVClient struct {
@@ -59,12 +63,37 @@ func (c *kVClient) Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOpt
 	return out, nil
 }
 
+func (c *kVClient) HintedPut(ctx context.Context, in *HintedPutRequest, opts ...grpc.CallOption) (*PutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutResponse)
+	err := c.cc.Invoke(ctx, KV_HintedPut_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVClient) Heartbeat(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[HeartbeatMessage, HeartbeatMessage], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &KV_ServiceDesc.Streams[0], KV_Heartbeat_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[HeartbeatMessage, HeartbeatMessage]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KV_HeartbeatClient = grpc.BidiStreamingClient[HeartbeatMessage, HeartbeatMessage]
+
 // KVServer is the server API for KV service.
 // All implementations must embed UnimplementedKVServer
 // for forward compatibility.
 type KVServer interface {
 	Put(context.Context, *PutRequest) (*PutResponse, error)
 	Get(context.Context, *GetRequest) (*GetResponse, error)
+	HintedPut(context.Context, *HintedPutRequest) (*PutResponse, error)
+	Heartbeat(grpc.BidiStreamingServer[HeartbeatMessage, HeartbeatMessage]) error
 	mustEmbedUnimplementedKVServer()
 }
 
@@ -80,6 +109,12 @@ func (UnimplementedKVServer) Put(context.Context, *PutRequest) (*PutResponse, er
 }
 func (UnimplementedKVServer) Get(context.Context, *GetRequest) (*GetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedKVServer) HintedPut(context.Context, *HintedPutRequest) (*PutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HintedPut not implemented")
+}
+func (UnimplementedKVServer) Heartbeat(grpc.BidiStreamingServer[HeartbeatMessage, HeartbeatMessage]) error {
+	return status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
 func (UnimplementedKVServer) mustEmbedUnimplementedKVServer() {}
 func (UnimplementedKVServer) testEmbeddedByValue()            {}
@@ -138,6 +173,31 @@ func _KV_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{})
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KV_HintedPut_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HintedPutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServer).HintedPut(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KV_HintedPut_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServer).HintedPut(ctx, req.(*HintedPutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KV_Heartbeat_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(KVServer).Heartbeat(&grpc.GenericServerStream[HeartbeatMessage, HeartbeatMessage]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type KV_HeartbeatServer = grpc.BidiStreamingServer[HeartbeatMessage, HeartbeatMessage]
+
 // KV_ServiceDesc is the grpc.ServiceDesc for KV service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -153,7 +213,18 @@ var KV_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Get",
 			Handler:    _KV_Get_Handler,
 		},
+		{
+			MethodName: "HintedPut",
+			Handler:    _KV_HintedPut_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Heartbeat",
+			Handler:       _KV_Heartbeat_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "proto/kv.proto",
 }

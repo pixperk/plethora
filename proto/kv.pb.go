@@ -117,6 +117,50 @@ func (x *Value) GetClock() *VectorClock {
 	return nil
 }
 
+type HeartbeatMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatMessage) Reset() {
+	*x = HeartbeatMessage{}
+	mi := &file_proto_kv_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatMessage) ProtoMessage() {}
+
+func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_kv_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatMessage.ProtoReflect.Descriptor instead.
+func (*HeartbeatMessage) Descriptor() ([]byte, []int) {
+	return file_proto_kv_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HeartbeatMessage) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
 type PutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -127,7 +171,7 @@ type PutRequest struct {
 
 func (x *PutRequest) Reset() {
 	*x = PutRequest{}
-	mi := &file_proto_kv_proto_msgTypes[2]
+	mi := &file_proto_kv_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -139,7 +183,7 @@ func (x *PutRequest) String() string {
 func (*PutRequest) ProtoMessage() {}
 
 func (x *PutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kv_proto_msgTypes[2]
+	mi := &file_proto_kv_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -152,7 +196,7 @@ func (x *PutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutRequest.ProtoReflect.Descriptor instead.
 func (*PutRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kv_proto_rawDescGZIP(), []int{2}
+	return file_proto_kv_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PutRequest) GetKey() string {
@@ -169,6 +213,66 @@ func (x *PutRequest) GetValue() *Value {
 	return nil
 }
 
+type HintedPutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         *Value                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	TargetNodeId  string                 `protobuf:"bytes,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HintedPutRequest) Reset() {
+	*x = HintedPutRequest{}
+	mi := &file_proto_kv_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HintedPutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HintedPutRequest) ProtoMessage() {}
+
+func (x *HintedPutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_kv_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HintedPutRequest.ProtoReflect.Descriptor instead.
+func (*HintedPutRequest) Descriptor() ([]byte, []int) {
+	return file_proto_kv_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *HintedPutRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *HintedPutRequest) GetValue() *Value {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *HintedPutRequest) GetTargetNodeId() string {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return ""
+}
+
 type PutResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -177,7 +281,7 @@ type PutResponse struct {
 
 func (x *PutResponse) Reset() {
 	*x = PutResponse{}
-	mi := &file_proto_kv_proto_msgTypes[3]
+	mi := &file_proto_kv_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -189,7 +293,7 @@ func (x *PutResponse) String() string {
 func (*PutResponse) ProtoMessage() {}
 
 func (x *PutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kv_proto_msgTypes[3]
+	mi := &file_proto_kv_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -202,7 +306,7 @@ func (x *PutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutResponse.ProtoReflect.Descriptor instead.
 func (*PutResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kv_proto_rawDescGZIP(), []int{3}
+	return file_proto_kv_proto_rawDescGZIP(), []int{5}
 }
 
 type GetRequest struct {
@@ -214,7 +318,7 @@ type GetRequest struct {
 
 func (x *GetRequest) Reset() {
 	*x = GetRequest{}
-	mi := &file_proto_kv_proto_msgTypes[4]
+	mi := &file_proto_kv_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -226,7 +330,7 @@ func (x *GetRequest) String() string {
 func (*GetRequest) ProtoMessage() {}
 
 func (x *GetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kv_proto_msgTypes[4]
+	mi := &file_proto_kv_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -239,7 +343,7 @@ func (x *GetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRequest.ProtoReflect.Descriptor instead.
 func (*GetRequest) Descriptor() ([]byte, []int) {
-	return file_proto_kv_proto_rawDescGZIP(), []int{4}
+	return file_proto_kv_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetRequest) GetKey() string {
@@ -259,7 +363,7 @@ type GetResponse struct {
 
 func (x *GetResponse) Reset() {
 	*x = GetResponse{}
-	mi := &file_proto_kv_proto_msgTypes[5]
+	mi := &file_proto_kv_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -271,7 +375,7 @@ func (x *GetResponse) String() string {
 func (*GetResponse) ProtoMessage() {}
 
 func (x *GetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_kv_proto_msgTypes[5]
+	mi := &file_proto_kv_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -284,7 +388,7 @@ func (x *GetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetResponse.ProtoReflect.Descriptor instead.
 func (*GetResponse) Descriptor() ([]byte, []int) {
-	return file_proto_kv_proto_rawDescGZIP(), []int{5}
+	return file_proto_kv_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetResponse) GetValues() []*Value {
@@ -313,21 +417,29 @@ const file_proto_kv_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"B\n" +
 	"\x05Value\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\tR\x04data\x12%\n" +
-	"\x05clock\x18\x02 \x01(\v2\x0f.kv.VectorClockR\x05clock\"?\n" +
+	"\x05clock\x18\x02 \x01(\v2\x0f.kv.VectorClockR\x05clock\"+\n" +
+	"\x10HeartbeatMessage\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"?\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1f\n" +
-	"\x05value\x18\x02 \x01(\v2\t.kv.ValueR\x05value\"\r\n" +
+	"\x05value\x18\x02 \x01(\v2\t.kv.ValueR\x05value\"k\n" +
+	"\x10HintedPutRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1f\n" +
+	"\x05value\x18\x02 \x01(\v2\t.kv.ValueR\x05value\x12$\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\tR\ftargetNodeId\"\r\n" +
 	"\vPutResponse\"\x1e\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"F\n" +
 	"\vGetResponse\x12!\n" +
 	"\x06values\x18\x01 \x03(\v2\t.kv.ValueR\x06values\x12\x14\n" +
-	"\x05found\x18\x02 \x01(\bR\x05found2T\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found2\xc5\x01\n" +
 	"\x02KV\x12&\n" +
 	"\x03Put\x12\x0e.kv.PutRequest\x1a\x0f.kv.PutResponse\x12&\n" +
-	"\x03Get\x12\x0e.kv.GetRequest\x1a\x0f.kv.GetResponseB#Z!github.com/pixperk/plethora/protob\x06proto3"
+	"\x03Get\x12\x0e.kv.GetRequest\x1a\x0f.kv.GetResponse\x122\n" +
+	"\tHintedPut\x12\x14.kv.HintedPutRequest\x1a\x0f.kv.PutResponse\x12;\n" +
+	"\tHeartbeat\x12\x14.kv.HeartbeatMessage\x1a\x14.kv.HeartbeatMessage(\x010\x01B#Z!github.com/pixperk/plethora/protob\x06proto3"
 
 var (
 	file_proto_kv_proto_rawDescOnce sync.Once
@@ -341,30 +453,37 @@ func file_proto_kv_proto_rawDescGZIP() []byte {
 	return file_proto_kv_proto_rawDescData
 }
 
-var file_proto_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_proto_kv_proto_goTypes = []any{
-	(*VectorClock)(nil), // 0: kv.VectorClock
-	(*Value)(nil),       // 1: kv.Value
-	(*PutRequest)(nil),  // 2: kv.PutRequest
-	(*PutResponse)(nil), // 3: kv.PutResponse
-	(*GetRequest)(nil),  // 4: kv.GetRequest
-	(*GetResponse)(nil), // 5: kv.GetResponse
-	nil,                 // 6: kv.VectorClock.EntriesEntry
+	(*VectorClock)(nil),      // 0: kv.VectorClock
+	(*Value)(nil),            // 1: kv.Value
+	(*HeartbeatMessage)(nil), // 2: kv.HeartbeatMessage
+	(*PutRequest)(nil),       // 3: kv.PutRequest
+	(*HintedPutRequest)(nil), // 4: kv.HintedPutRequest
+	(*PutResponse)(nil),      // 5: kv.PutResponse
+	(*GetRequest)(nil),       // 6: kv.GetRequest
+	(*GetResponse)(nil),      // 7: kv.GetResponse
+	nil,                      // 8: kv.VectorClock.EntriesEntry
 }
 var file_proto_kv_proto_depIdxs = []int32{
-	6, // 0: kv.VectorClock.entries:type_name -> kv.VectorClock.EntriesEntry
+	8, // 0: kv.VectorClock.entries:type_name -> kv.VectorClock.EntriesEntry
 	0, // 1: kv.Value.clock:type_name -> kv.VectorClock
 	1, // 2: kv.PutRequest.value:type_name -> kv.Value
-	1, // 3: kv.GetResponse.values:type_name -> kv.Value
-	2, // 4: kv.KV.Put:input_type -> kv.PutRequest
-	4, // 5: kv.KV.Get:input_type -> kv.GetRequest
-	3, // 6: kv.KV.Put:output_type -> kv.PutResponse
-	5, // 7: kv.KV.Get:output_type -> kv.GetResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	1, // 3: kv.HintedPutRequest.value:type_name -> kv.Value
+	1, // 4: kv.GetResponse.values:type_name -> kv.Value
+	3, // 5: kv.KV.Put:input_type -> kv.PutRequest
+	6, // 6: kv.KV.Get:input_type -> kv.GetRequest
+	4, // 7: kv.KV.HintedPut:input_type -> kv.HintedPutRequest
+	2, // 8: kv.KV.Heartbeat:input_type -> kv.HeartbeatMessage
+	5, // 9: kv.KV.Put:output_type -> kv.PutResponse
+	7, // 10: kv.KV.Get:output_type -> kv.GetResponse
+	5, // 11: kv.KV.HintedPut:output_type -> kv.PutResponse
+	2, // 12: kv.KV.Heartbeat:output_type -> kv.HeartbeatMessage
+	9, // [9:13] is the sub-list for method output_type
+	5, // [5:9] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_proto_kv_proto_init() }
@@ -378,7 +497,7 @@ func file_proto_kv_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_kv_proto_rawDesc), len(file_proto_kv_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
