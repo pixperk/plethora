@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"maps"
 	"net"
 	"sync"
 	"time"
@@ -150,9 +151,7 @@ func toProtoValues(vals []types.Value) []*pb.Value {
 func fromProtoValue(v *pb.Value) types.Value {
 	clock := vclock.NewVClock()
 	if v.Clock != nil {
-		for k, val := range v.Clock.Entries {
-			clock[k] = val
-		}
+		maps.Copy(clock, v.Clock.Entries)
 	}
 	return types.Value{Data: v.Data, Clock: clock}
 }

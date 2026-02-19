@@ -45,6 +45,22 @@ func RemoteGet(addr string, key types.Key) ([]types.Value, bool, error) {
 	return vals, resp.Found, nil
 }
 
+func RemoteHintedPut(addr string, key types.Key, val types.Value, targetNodeId string) error {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	c := pb.NewKVClient(conn)
+	_, err = c.HintedPut(context.Background(), &pb.HintedPutRequest{
+		Key:          string(key),
+		Value:        toProtoValue(val),
+		TargetNodeId: targetNodeId,
+	})
+	return err
+}
+
 func toProtoValue(v types.Value) *pb.Value {
 	return &pb.Value{
 		Data:  v.Data,

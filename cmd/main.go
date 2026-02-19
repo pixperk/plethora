@@ -21,20 +21,20 @@ func main() {
 	const W = 2
 
 	nodes := make([]*node.Node, numNodes)
+	listeners := make([]net.Listener, numNodes)
 	for i := range numNodes {
 		lis, err := net.Listen("tcp", "localhost:0")
 		if err != nil {
 			log.Fatal(err)
 		}
-		addr := lis.Addr().String()
-		n := node.NewNode(fmt.Sprintf("node-%d", i+1), addr)
-		nodes[i] = n
-
+		listeners[i] = lis
+		nodes[i] = node.NewNode(fmt.Sprintf("node-%d", i+1), lis.Addr().String())
+	}
+	for i, n := range nodes {
 		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, server.NewServer(n))
-		go grpcServer.Serve(lis)
-
-		fmt.Printf("[BOOT] %s listening on %s\n", n.NodeID, addr)
+		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes))
+		go grpcServer.Serve(listeners[i])
+		fmt.Printf("[BOOT] %s listening on %s\n", n.NodeID, n.Addr)
 	}
 
 	r, err := ring.NewRing(Q, N, R, W, nodes)

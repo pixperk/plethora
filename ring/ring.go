@@ -165,6 +165,26 @@ func (r *Ring) PreferenceList(key types.Key) []*node.Node {
 	return nodes
 }
 
+// NextHealthyNode returns the first node in the ring not already in the
+// preference list. Acts as a stand-in to hold hinted writes when a preferred
+// replica is unreachable. With N typically 3-7, the inner loop is tiny so a
+// nested scan is better than building a map.
+func (r *Ring) NextHealthyNode(preferredNodes []*node.Node) *node.Node {
+	for _, n := range r.Nodes {
+		skip := false
+		for _, p := range preferredNodes {
+			if n.NodeID == p.NodeID {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			return n
+		}
+	}
+	return nil
+}
+
 // Get reads from N nodes in the preference list, requires at least R responses.
 // Deduplicates using vector clocks and returns only causally distinct versions.
 func (r *Ring) Get(key types.Key) ([]types.Value, error) {
@@ -242,11 +262,21 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 		Clock: clock,
 	}
 
-	// replicate to all N nodes in the preference list via gRPC
+	// sloppy quorum: try preference list first, on failure fall back to
+	// the next available node in the ring and send a hinted put instead
 	acks := 0
 	for _, n := range nodes {
 		err := client.RemotePut(n.Addr, key, value)
 		if err == nil {
+			acks++
+			continue
+		}
+		// preferred node is down, find a stand-in
+		standIn := r.NextHealthyNode(nodes)
+		if standIn == nil {
+			continue
+		}
+		if client.RemoteHintedPut(standIn.Addr, key, value, n.NodeID) == nil {
 			acks++
 		}
 	}

@@ -20,22 +20,27 @@ func makeNodes(ids ...string) []*node.Node {
 }
 
 // makeServedNodes creates nodes with OS-assigned ports and starts gRPC servers.
-// Returns the nodes and a cleanup function to stop all servers.
+// All nodes are created first so NewServer can receive the full peer list.
 func makeServedNodes(t *testing.T, ids ...string) []*node.Node {
 	t.Helper()
 	nodes := make([]*node.Node, len(ids))
+	listeners := make([]net.Listener, len(ids))
+
+	// phase 1: allocate ports and create nodes
 	for i, id := range ids {
 		lis, err := net.Listen("tcp", "localhost:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		addr := lis.Addr().String()
-		n := node.NewNode(id, addr)
-		nodes[i] = n
+		listeners[i] = lis
+		nodes[i] = node.NewNode(id, lis.Addr().String())
+	}
 
+	// phase 2: start servers with full peer list
+	for i, n := range nodes {
 		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, server.NewServer(n))
-		go grpcServer.Serve(lis)
+		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes))
+		go grpcServer.Serve(listeners[i])
 		t.Cleanup(grpcServer.Stop)
 	}
 	return nodes
@@ -282,6 +287,61 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 		if ok {
 			t.Fatalf("non-preference node %s has the value", n.NodeID)
 		}
+	}
+}
+
+func TestSloppyQuorumHintedHandoff(t *testing.T) {
+	// start 4 served nodes, figure out the preference list for a key,
+	// then kill one preferred node and verify put still succeeds
+	nodes := make([]*node.Node, 4)
+	listeners := make([]net.Listener, 4)
+	grpcServers := make([]*grpc.Server, 4)
+
+	ids := []string{"n1", "n2", "n3", "n4"}
+	for i, id := range ids {
+		lis, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners[i] = lis
+		nodes[i] = node.NewNode(id, lis.Addr().String())
+	}
+	for i, n := range nodes {
+		grpcServers[i] = grpc.NewServer()
+		pb.RegisterKVServer(grpcServers[i], server.NewServer(n, nodes))
+		go grpcServers[i].Serve(listeners[i])
+		t.Cleanup(grpcServers[i].Stop)
+	}
+
+	r, _ := NewRing(12, 3, 2, 2, nodes)
+	plist := r.PreferenceList("sloppy-key")
+
+	// find a node in the preference list that is NOT the coordinator (index > 0)
+	// and stop its server to simulate failure
+	victim := plist[len(plist)-1]
+	for i, n := range nodes {
+		if n.NodeID == victim.NodeID {
+			grpcServers[i].Stop()
+			break
+		}
+	}
+
+	// put should still succeed via sloppy quorum
+	if err := r.Put("sloppy-key", "hinted-val", nil); err != nil {
+		t.Fatalf("put failed with one node down: %v", err)
+	}
+
+	// the stand-in node (not in preference list) should hold the hint
+	standIn := r.NextHealthyNode(plist)
+	if standIn == nil {
+		t.Fatal("no stand-in node found")
+	}
+	hints := standIn.DrainHints(victim.NodeID)
+	if len(hints) != 1 {
+		t.Fatalf("expected 1 hint on stand-in %s, got %d", standIn.NodeID, len(hints))
+	}
+	if hints[0].Value.Data != "hinted-val" {
+		t.Fatalf("hint data mismatch: got %s", hints[0].Value.Data)
 	}
 }
 
