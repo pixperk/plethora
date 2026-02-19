@@ -285,3 +285,52 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 	}
 	return nil
 }
+
+// ReplicaPeers returns the set of nodes that share at least one key range
+// with the given node. For each partition, we build the preference list and
+// check if nodeID appears in it. If so, the other nodes in that list are
+// replica peers.
+func (r *Ring) ReplicaPeers(nodeID string) []*node.Node {
+	seen := make(map[string]bool)
+	seen[nodeID] = true // exclude self
+
+	for i := 0; i < r.Q; i++ {
+		plist := r.prefListForPartition(i)
+		inList := false
+		for _, n := range plist {
+			if n.NodeID == nodeID {
+				inList = true
+				break
+			}
+		}
+		if !inList {
+			continue
+		}
+		for _, n := range plist {
+			seen[n.NodeID] = true
+		}
+	}
+
+	delete(seen, nodeID)
+	peers := make([]*node.Node, 0, len(seen))
+	for id := range seen {
+		peers = append(peers, r.NodeMap[id])
+	}
+	return peers
+}
+
+// prefListForPartition returns the N distinct nodes for a given partition index.
+func (r *Ring) prefListForPartition(partitionID int) []*node.Node {
+	nodes := make([]*node.Node, 0, r.N)
+	seen := make(map[string]bool)
+	for i := 0; i < r.Q && len(nodes) < r.N; i++ {
+		idx := (partitionID + i) % r.Q
+		nid := r.Partitions[idx].Token.NodeID
+		if seen[nid] {
+			continue
+		}
+		seen[nid] = true
+		nodes = append(nodes, r.NodeMap[nid])
+	}
+	return nodes
+}

@@ -30,9 +30,12 @@ func main() {
 		listeners[i] = lis
 		nodes[i] = node.NewNode(fmt.Sprintf("node-%d", i+1), lis.Addr().String())
 	}
+	servers := make([]*server.Server, numNodes)
 	for i, n := range nodes {
+		srv := server.NewServer(n, nodes)
+		servers[i] = srv
 		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes))
+		pb.RegisterKVServer(grpcServer, srv)
 		go grpcServer.Serve(listeners[i])
 		fmt.Printf("[BOOT] %s listening on %s\n", n.NodeID, n.Addr)
 	}
@@ -41,6 +44,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// wire replica peers for anti-entropy
+	for i, n := range nodes {
+		servers[i].SetReplicaPeers(r.ReplicaPeers(n.NodeID))
+	}
+
 	fmt.Printf("\n[RING] Q=%d N=%d R=%d W=%d nodes=%d\n\n", Q, N, R, W, numNodes)
 
 	for i, p := range r.Partitions {

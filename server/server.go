@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pixperk/plethora/client"
+	"github.com/pixperk/plethora/merkle"
 	"github.com/pixperk/plethora/node"
 	pb "github.com/pixperk/plethora/proto"
 	"github.com/pixperk/plethora/types"
@@ -25,6 +26,9 @@ type Server struct {
 	alive    map[string]bool   //nodeID -> alive status of peer nodes
 
 	aliveMu sync.RWMutex
+
+	// anti-entropy: nodes that share key ranges with this node
+	replicaPeers []*node.Node
 }
 
 func NewServer(n *node.Node, allNodes []*node.Node) *Server {
@@ -46,6 +50,11 @@ func NewServer(n *node.Node, allNodes []*node.Node) *Server {
 		addrToID: addrToID,
 		alive:    alive,
 	}
+}
+
+// SetReplicaPeers sets the nodes this server should sync with during anti-entropy.
+func (s *Server) SetReplicaPeers(peers []*node.Node) {
+	s.replicaPeers = peers
 }
 
 func (s *Server) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
@@ -80,6 +89,7 @@ func (s *Server) Start() error {
 	pb.RegisterKVServer(grpcServer, s)
 
 	go s.runHandoff()
+	go s.runAntiEntropy()
 
 	return grpcServer.Serve(lis)
 }
@@ -153,6 +163,65 @@ func (s *Server) runHandoff() {
 			}
 		}
 		s.aliveMu.RUnlock()
+	}
+}
+
+// runAntiEntropy periodically picks a replica peer, compares merkle trees,
+// and syncs any divergent keys.
+func (s *Server) runAntiEntropy() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	peerIdx := 0
+	for range ticker.C {
+		if len(s.replicaPeers) == 0 {
+			continue
+		}
+
+		// round-robin through replica peers
+		peer := s.replicaPeers[peerIdx%len(s.replicaPeers)]
+		peerIdx++
+
+		// check if peer is alive
+		s.aliveMu.RLock()
+		up := s.alive[peer.NodeID]
+		s.aliveMu.RUnlock()
+		if !up {
+			continue
+		}
+
+		// get peer's key hashes
+		entries, err := client.RemoteGetKeyHashes(peer.Addr)
+		if err != nil {
+			continue
+		}
+
+		// convert proto entries to merkle.KeyHash
+		peerHashes := make([]merkle.KeyHash, len(entries))
+		for i, e := range entries {
+			var h [16]byte
+			copy(h[:], e.Hash)
+			peerHashes[i] = merkle.KeyHash{Key: e.Key, Hash: h}
+		}
+
+		// build both trees locally and diff
+		localTree := s.node.MerkleTree()
+		peerTree := merkle.Build(peerHashes)
+		diffKeys := merkle.Diff(localTree, peerTree)
+		if len(diffKeys) == 0 {
+			continue
+		}
+
+		// fetch divergent values from peer and write to local storage
+		data, err := client.RemoteSyncKeys(peer.Addr, diffKeys)
+		if err != nil {
+			continue
+		}
+		for key, vals := range data {
+			for _, val := range vals {
+				s.node.Store(types.Key(key), val)
+			}
+		}
 	}
 }
 

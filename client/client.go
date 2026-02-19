@@ -61,6 +61,47 @@ func RemoteHintedPut(addr string, key types.Key, val types.Value, targetNodeId s
 	return err
 }
 
+// RemoteGetKeyHashes fetches all key-hash pairs from a peer node's storage.
+func RemoteGetKeyHashes(addr string) ([]*pb.KeyHashEntry, error) {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	c := pb.NewKVClient(conn)
+	resp, err := c.GetKeyHashes(context.Background(), &pb.GetKeyHashesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Entries, nil
+}
+
+// RemoteSyncKeys fetches the actual values for a set of keys from a peer node.
+func RemoteSyncKeys(addr string, keys []string) (map[string][]types.Value, error) {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	c := pb.NewKVClient(conn)
+	resp, err := c.SyncKeys(context.Background(), &pb.SyncKeysRequest{Keys: keys})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]types.Value, len(resp.Data))
+	for k, gr := range resp.Data {
+		vals := make([]types.Value, len(gr.Values))
+		for i, v := range gr.Values {
+			vals[i] = fromProtoValue(v)
+		}
+		result[k] = vals
+	}
+	return result, nil
+}
+
 func toProtoValue(v types.Value) *pb.Value {
 	return &pb.Value{
 		Data:  v.Data,

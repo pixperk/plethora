@@ -3,6 +3,7 @@ package node
 import (
 	"sync"
 
+	"github.com/pixperk/plethora/merkle"
 	"github.com/pixperk/plethora/storage"
 	"github.com/pixperk/plethora/types"
 	"github.com/pixperk/plethora/vclock"
@@ -22,14 +23,19 @@ type Node struct {
 
 	hintLock  sync.Mutex
 	HintStore Hints
+
+	merkleMu    sync.Mutex
+	merkleTree  *merkle.MerkleNode
+	merkleDirty bool
 }
 
 func NewNode(nodeID string, addr string) *Node {
 	return &Node{
-		NodeID:    nodeID,
-		Addr:      addr,
-		Storage:   storage.NewStorage(),
-		HintStore: make(Hints),
+		NodeID:      nodeID,
+		Addr:        addr,
+		Storage:     storage.NewStorage(),
+		HintStore:   make(Hints),
+		merkleDirty: true,
 	}
 }
 
@@ -54,12 +60,31 @@ func (n *Node) Put(key types.Key, val string, ctx vclock.VClock) {
 	}
 
 	n.Storage.Put(key, value)
+	n.markMerkleDirty()
 }
 
 // Store writes a pre-built value directly to storage without modifying the clock.
 // Used by the ring coordinator to replicate an already-prepared value to nodes.
 func (n *Node) Store(key types.Key, val types.Value) {
 	n.Storage.Put(key, val)
+	n.markMerkleDirty()
+}
+
+func (n *Node) markMerkleDirty() {
+	n.merkleMu.Lock()
+	n.merkleDirty = true
+	n.merkleMu.Unlock()
+}
+
+// MerkleTree returns the node's merkle tree, rebuilding it lazily if data changed.
+func (n *Node) MerkleTree() *merkle.MerkleNode {
+	n.merkleMu.Lock()
+	defer n.merkleMu.Unlock()
+	if n.merkleDirty {
+		n.merkleTree = merkle.Build(n.Storage.KeyHashes())
+		n.merkleDirty = false
+	}
+	return n.merkleTree
 }
 
 func (n *Node) StoreHint(targetNodeID string, key types.Key, val types.Value) {
