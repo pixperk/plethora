@@ -205,11 +205,11 @@ func TestPreferenceListReturnsNDistinctNodes(t *testing.T) {
 	}
 
 	seen := make(map[string]bool)
-	for _, n := range plist {
-		if seen[n.NodeID] {
-			t.Fatalf("duplicate node %s in preference list", n.NodeID)
+	for _, target := range plist {
+		if seen[target.Node.NodeID] {
+			t.Fatalf("duplicate node %s in preference list", target.Node.NodeID)
 		}
-		seen[n.NodeID] = true
+		seen[target.Node.NodeID] = true
 	}
 }
 
@@ -219,8 +219,8 @@ func TestPreferenceListFirstNodeIsOwner(t *testing.T) {
 	owner := r.Lookup("user:1")
 	plist := r.PreferenceList("user:1")
 
-	if plist[0].NodeID != owner.NodeID {
-		t.Fatalf("first node in preference list (%s) != owner (%s)", plist[0].NodeID, owner.NodeID)
+	if plist[0].Node.NodeID != owner.NodeID {
+		t.Fatalf("first node in preference list (%s) != owner (%s)", plist[0].Node.NodeID, owner.NodeID)
 	}
 }
 
@@ -264,20 +264,20 @@ func TestPutReplicatesToNNodes(t *testing.T) {
 	plist := r.PreferenceList("user:1")
 
 	// verify preference list nodes have the value (check via local storage)
-	for _, n := range plist {
-		vals, ok := n.Get("user:1")
+	for _, target := range plist {
+		vals, ok := target.Node.Get("user:1")
 		if !ok || len(vals) == 0 {
-			t.Fatalf("node %s in preference list missing the value", n.NodeID)
+			t.Fatalf("node %s in preference list missing the value", target.Node.NodeID)
 		}
 		if vals[0].Data != "alice" {
-			t.Fatalf("node %s has wrong data: %s", n.NodeID, vals[0].Data)
+			t.Fatalf("node %s has wrong data: %s", target.Node.NodeID, vals[0].Data)
 		}
 	}
 
 	// verify non-preference nodes don't have the value
 	prefSet := make(map[string]bool)
-	for _, n := range plist {
-		prefSet[n.NodeID] = true
+	for _, target := range plist {
+		prefSet[target.Node.NodeID] = true
 	}
 	for _, n := range r.Nodes {
 		if prefSet[n.NodeID] {
@@ -314,34 +314,47 @@ func TestSloppyQuorumHintedHandoff(t *testing.T) {
 	}
 
 	r, _ := NewRing(12, 3, 2, 2, nodes)
-	plist := r.PreferenceList("sloppy-key")
 
-	// find a node in the preference list that is NOT the coordinator (index > 0)
-	// and stop its server to simulate failure
+	// get the ideal preference list (all alive) to find victim
+	plist := r.PreferenceList("sloppy-key")
 	victim := plist[len(plist)-1]
+
+	// stop the victim's server and tell the ring it's dead
 	for i, n := range nodes {
-		if n.NodeID == victim.NodeID {
+		if n.NodeID == victim.Node.NodeID {
 			grpcServers[i].Stop()
 			break
 		}
 	}
+	dead := map[string]bool{victim.Node.NodeID: true}
+	r.IsAlive = func(nodeID string) bool { return !dead[nodeID] }
 
-	// put should still succeed via sloppy quorum
+	// put should still succeed via sloppy quorum (stand-in picked automatically)
 	if err := r.Put("sloppy-key", "hinted-val", nil); err != nil {
 		t.Fatalf("put failed with one node down: %v", err)
 	}
 
-	// the stand-in node (not in preference list) should hold the hint
-	standIn := r.NextHealthyNode(plist)
+	// find which node is the stand-in by checking hint stores
+	prefSet := make(map[string]bool)
+	for _, target := range plist {
+		prefSet[target.Node.NodeID] = true
+	}
+	var standIn *node.Node
+	for _, n := range nodes {
+		if prefSet[n.NodeID] {
+			continue
+		}
+		hints := n.DrainHints(victim.Node.NodeID)
+		if len(hints) > 0 {
+			standIn = n
+			if hints[0].Value.Data != "hinted-val" {
+				t.Fatalf("hint data mismatch: got %s", hints[0].Value.Data)
+			}
+			break
+		}
+	}
 	if standIn == nil {
-		t.Fatal("no stand-in node found")
-	}
-	hints := standIn.DrainHints(victim.NodeID)
-	if len(hints) != 1 {
-		t.Fatalf("expected 1 hint on stand-in %s, got %d", standIn.NodeID, len(hints))
-	}
-	if hints[0].Value.Data != "hinted-val" {
-		t.Fatalf("hint data mismatch: got %s", hints[0].Value.Data)
+		t.Fatal("no stand-in node received the hint")
 	}
 }
 

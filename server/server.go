@@ -57,6 +57,14 @@ func (s *Server) SetReplicaPeers(peers []*node.Node) {
 	s.replicaPeers = peers
 }
 
+// NodeIsAlive reports whether a peer node is reachable according to this
+// server's heartbeat tracker. Suitable for use as ring.IsAlive.
+func (s *Server) NodeIsAlive(nodeID string) bool {
+	s.aliveMu.RLock()
+	defer s.aliveMu.RUnlock()
+	return s.alive[nodeID]
+}
+
 func (s *Server) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
 	val := fromProtoValue(req.Value)
 	s.node.Store(types.Key(req.Key), val)

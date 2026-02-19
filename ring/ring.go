@@ -22,6 +22,10 @@ type Ring struct {
 	//quorum
 	R int //min number of reads
 	W int //min number of writes
+
+	// IsAlive reports whether a node is reachable. Used by Put for sloppy quorum
+	// to skip dead nodes and find stand-ins. Defaults to always-alive if not set.
+	IsAlive func(nodeID string) bool
 }
 
 // creates a ring with Q equal-sized partitions distributed evenly across the given nodes.
@@ -140,59 +144,80 @@ func (r *Ring) RemoveNode(nodeID string) error {
 	return nil
 }
 
-// PreferenceList walks the ring clockwise from the key's partition
-// and collects N distinct nodes responsible for storing this key.
-func (r *Ring) PreferenceList(key types.Key) []*node.Node {
+// Target represents a node to send a write to. If HintFor is non-empty,
+// this node is a stand-in and the write should be a hinted put.
+type Target struct {
+	Node    *node.Node
+	HintFor string // empty = preferred node, non-empty = stand-in covering for this nodeID
+}
+
+// PreferenceList walks the ring clockwise from the key's partition and
+// collects N healthy nodes. If a preferred node is dead, it's skipped
+// and the next healthy non-preferred node becomes a stand-in with a hint.
+func (r *Ring) PreferenceList(key types.Key) []Target {
 	hash := md5Hash(string(key))
 	partitionID := int(hash % uint64(r.Q))
 
-	nodes := make([]*node.Node, 0, r.N)
-	//track if node is seen
+	// first pass: find the N ideal (ignoring health) preferred nodes
+	preferred := make(map[string]bool)
 	seen := make(map[string]bool)
-
-	// walk partitions clockwise, skip duplicate nodes
-	// make sure to stop after we've seen N distinct nodes, or we've looped through all partitions (in case N > number of nodes)
-	for i := 0; i < r.Q && len(nodes) < r.N; i++ {
+	for i := 0; i < r.Q && len(preferred) < r.N; i++ {
 		idx := (partitionID + i) % r.Q
-		nodeID := r.Partitions[idx].Token.NodeID
-		if seen[nodeID] {
+		nid := r.Partitions[idx].Token.NodeID
+		if seen[nid] {
 			continue
 		}
-		seen[nodeID] = true
-		nodes = append(nodes, r.NodeMap[nodeID])
+		seen[nid] = true
+		preferred[nid] = true
 	}
 
-	return nodes
+	// second pass: walk the ring again, collect N healthy targets.
+	// preferred + alive = regular put. preferred + dead = skip, queue for stand-in.
+	// non-preferred + alive = stand-in for the first uncovered dead preferred node.
+	var targets []Target
+	var deadPreferred []string // preferred nodes that were dead, need coverage
+	seen = make(map[string]bool)
+
+	for i := 0; i < r.Q && len(targets) < r.N; i++ {
+		idx := (partitionID + i) % r.Q
+		nid := r.Partitions[idx].Token.NodeID
+		if seen[nid] {
+			continue
+		}
+		seen[nid] = true
+
+		if preferred[nid] {
+			if r.isAlive(nid) {
+				targets = append(targets, Target{Node: r.NodeMap[nid]})
+			} else {
+				deadPreferred = append(deadPreferred, nid)
+			}
+		} else if r.isAlive(nid) && len(deadPreferred) > 0 {
+			// stand-in: covers the first uncovered dead preferred node
+			targetID := deadPreferred[0]
+			deadPreferred = deadPreferred[1:]
+			targets = append(targets, Target{Node: r.NodeMap[nid], HintFor: targetID})
+		}
+	}
+
+	return targets
 }
 
-// NextHealthyNode returns the first node in the ring not already in the
-// preference list. Acts as a stand-in to hold hinted writes when a preferred
-// replica is unreachable. With N typically 3-7, the inner loop is tiny so a
-// nested scan is better than building a map.
-func (r *Ring) NextHealthyNode(preferredNodes []*node.Node) *node.Node {
-	for _, n := range r.Nodes {
-		skip := false
-		for _, p := range preferredNodes {
-			if n.NodeID == p.NodeID {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			return n
-		}
+func (r *Ring) isAlive(nodeID string) bool {
+	if r.IsAlive == nil {
+		return true
 	}
-	return nil
+	return r.IsAlive(nodeID)
 }
 
 // Get reads from N nodes in the preference list, requires at least R responses.
 // Deduplicates using vector clocks and returns only causally distinct versions.
 func (r *Ring) Get(key types.Key) ([]types.Value, error) {
-	nodes := r.PreferenceList(key)
+	targets := r.PreferenceList(key)
 	var allVals []types.Value
 	responses := 0
-	for _, n := range nodes {
-		vals, found, err := client.RemoteGet(n.Addr, key)
+	for _, t := range targets {
+		vals, found, err := client.RemoteGet(t.Node.Addr, key)
 		if err != nil {
 			continue
 		}
@@ -201,7 +226,6 @@ func (r *Ring) Get(key types.Key) ([]types.Value, error) {
 			allVals = append(allVals, vals...)
 		}
 	}
-	//quorum : if we got responses from fewer than R nodes, we consider the read failed due to insufficient replicas responding. With networking, this would be based on timeouts and error handling, but in this in-memory simulation, we assume all calls succeed.
 	if responses < r.R {
 		return nil, fmt.Errorf("quorum not met: got %d responses, need R=%d", responses, r.R)
 	}
@@ -239,16 +263,17 @@ func dedup(vals []types.Value) []types.Value {
 	return result
 }
 
-// Put writes to N nodes in the preference list, requires at least W successes.
-// The first node (coordinator) builds the value with the vector clock.
+// Put writes to N healthy nodes, requires at least W successes.
+// PreferenceList already picked the first N healthy nodes (with stand-ins
+// for any dead preferred nodes). Put just iterates and sends.
 func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
-	nodes := r.PreferenceList(key)
-	if len(nodes) == 0 {
+	targets := r.PreferenceList(key)
+	if len(targets) == 0 {
 		return fmt.Errorf("no nodes available")
 	}
 
 	// coordinator builds the clock and value
-	coordinator := nodes[0]
+	coordinator := targets[0].Node
 	var clock vclock.VClock
 	if ctx == nil {
 		clock = vclock.NewVClock()
@@ -262,24 +287,21 @@ func (r *Ring) Put(key types.Key, val string, ctx vclock.VClock) error {
 		Clock: clock,
 	}
 
-	// sloppy quorum: try preference list first, on failure fall back to
-	// the next available node in the ring and send a hinted put instead
 	acks := 0
-	for _, n := range nodes {
-		err := client.RemotePut(n.Addr, key, value)
-		if err == nil {
-			acks++
-			continue
-		}
-		// preferred node is down, find a stand-in
-		standIn := r.NextHealthyNode(nodes)
-		if standIn == nil {
-			continue
-		}
-		if client.RemoteHintedPut(standIn.Addr, key, value, n.NodeID) == nil {
-			acks++
+	for _, t := range targets {
+		if t.HintFor == "" {
+			// preferred node: regular put
+			if client.RemotePut(t.Node.Addr, key, value) == nil {
+				acks++
+			}
+		} else {
+			// stand-in: hinted put tagged with the dead preferred node
+			if client.RemoteHintedPut(t.Node.Addr, key, value, t.HintFor) == nil {
+				acks++
+			}
 		}
 	}
+
 	if acks < r.W {
 		return fmt.Errorf("quorum not met: got %d acks, need W=%d", acks, r.W)
 	}

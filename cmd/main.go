@@ -50,6 +50,9 @@ func main() {
 		servers[i].SetReplicaPeers(r.ReplicaPeers(n.NodeID))
 	}
 
+	// use first server's health view for the ring's sloppy quorum decisions
+	r.IsAlive = servers[0].NodeIsAlive
+
 	fmt.Printf("\n[RING] Q=%d N=%d R=%d W=%d nodes=%d\n\n", Q, N, R, W, numNodes)
 
 	for i, p := range r.Partitions {
@@ -64,8 +67,8 @@ func main() {
 		owner := r.Lookup(key)
 		plist := r.PreferenceList(types.Key(key))
 		replicaIDs := make([]string, len(plist))
-		for j, n := range plist {
-			replicaIDs[j] = n.NodeID
+		for j, t := range plist {
+			replicaIDs[j] = t.Node.NodeID
 		}
 
 		fmt.Printf("[PUT] key=%q val=%q  coordinator=%s  replicas=%v\n", key, vals[i], owner.NodeID, replicaIDs)
