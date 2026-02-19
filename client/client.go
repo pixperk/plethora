@@ -102,6 +102,22 @@ func RemoteSyncKeys(addr string, keys []string) (map[string][]types.Value, error
 	return result, nil
 }
 
+// RemoteGossip sends our membership list to a peer and returns theirs.
+func RemoteGossip(addr string, members []*pb.GossipMember) ([]*pb.GossipMember, error) {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	c := pb.NewKVClient(conn)
+	resp, err := c.Gossip(context.Background(), &pb.GossipRequest{Members: members})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Members, nil
+}
+
 func toProtoValue(v types.Value) *pb.Value {
 	return &pb.Value{
 		Data:  v.Data,

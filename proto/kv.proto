@@ -13,10 +13,6 @@ message Value {
   VectorClock clock = 2;
 }
 
-message HeartbeatMessage{
-  string node_id = 1;
-}
-
 message PutRequest {
   string key = 1;
   Value value = 2;
@@ -60,11 +56,26 @@ message SyncKeysResponse {
   map<string, GetResponse> data = 1; // key -> values for that key
 }
 
+// gossip: exchange membership lists for failure detection and node discovery
+message GossipMember {
+  string node_id = 1;
+  string addr = 2;
+  uint64 heartbeat = 3;
+}
+
+message GossipRequest {
+  repeated GossipMember members = 1;
+}
+
+message GossipResponse {
+  repeated GossipMember members = 1;
+}
+
 service KV {
   rpc Put(PutRequest) returns (PutResponse);
   rpc Get(GetRequest) returns (GetResponse);
   rpc HintedPut(HintedPutRequest) returns (PutResponse);
-  rpc Heartbeat(stream HeartbeatMessage) returns (stream HeartbeatMessage);
   rpc GetKeyHashes(GetKeyHashesRequest) returns (GetKeyHashesResponse);
   rpc SyncKeys(SyncKeysRequest) returns (SyncKeysResponse);
+  rpc Gossip(GossipRequest) returns (GossipResponse);
 }

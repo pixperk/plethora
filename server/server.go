@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pixperk/plethora/client"
+	"github.com/pixperk/plethora/gossip"
 	"github.com/pixperk/plethora/merkle"
 	"github.com/pixperk/plethora/node"
 	pb "github.com/pixperk/plethora/proto"
@@ -29,6 +30,9 @@ type Server struct {
 
 	// anti-entropy: nodes that share key ranges with this node
 	replicaPeers []*node.Node
+
+	// gossip-based membership and failure detection
+	members *gossip.MemberList
 }
 
 func NewServer(n *node.Node, allNodes []*node.Node) *Server {
@@ -102,30 +106,30 @@ func (s *Server) Start() error {
 	return grpcServer.Serve(lis)
 }
 
-func (s *Server) Heartbeat(stream pb.KV_HeartbeatServer) error {
-	msg, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-	peerID := msg.NodeId
-
-	s.aliveMu.Lock()
-	s.alive[peerID] = true
-	s.aliveMu.Unlock()
-
-	//keep receiving heartbeats until the stream is closed,
-	// if we get an error receiving, mark the peer as dead and exit
-	for {
-		_, err := stream.Recv()
-		if err != nil {
-			// stream broke = peer is down
-			s.aliveMu.Lock()
-			s.alive[peerID] = false
-			s.aliveMu.Unlock()
-			return err
+// Gossip receives a peer's membership list, merges it, and responds with ours.
+func (s *Server) Gossip(_ context.Context, req *pb.GossipRequest) (*pb.GossipResponse, error) {
+	// convert proto to gossip entries and merge
+	remote := make([]gossip.MemberEntry, len(req.Members))
+	for i, m := range req.Members {
+		remote[i] = gossip.MemberEntry{
+			NodeID:    m.NodeId,
+			Addr:      m.Addr,
+			Heartbeat: m.Heartbeat,
 		}
 	}
+	s.members.Merge(remote)
 
+	// respond with our full list so the sender can merge too
+	entries := s.members.Entries()
+	resp := make([]*pb.GossipMember, len(entries))
+	for i, e := range entries {
+		resp[i] = &pb.GossipMember{
+			NodeId:    e.NodeID,
+			Addr:      e.Addr,
+			Heartbeat: e.Heartbeat,
+		}
+	}
+	return &pb.GossipResponse{Members: resp}, nil
 }
 
 // GetKeyHashes returns the key-hash pairs from this node's storage.
