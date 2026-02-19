@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"maps"
 
 	pb "github.com/pixperk/plethora/proto"
 	"github.com/pixperk/plethora/types"
@@ -128,9 +129,7 @@ func toProtoValue(v types.Value) *pb.Value {
 func fromProtoValue(v *pb.Value) types.Value {
 	clock := vclock.NewVClock()
 	if v.Clock != nil {
-		for k, val := range v.Clock.Entries {
-			clock[k] = val
-		}
+		maps.Copy(clock, v.Clock.Entries)
 	}
 	return types.Value{Data: v.Data, Clock: clock}
 }

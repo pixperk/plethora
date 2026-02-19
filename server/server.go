@@ -25,6 +25,8 @@ type Server struct {
 
 	// gossip-based membership and failure detection
 	members *gossip.MemberList
+
+	grpcServer *grpc.Server
 }
 
 func NewServer(n *node.Node, seeds []*node.Node, replicaPeers []*node.Node, tFail time.Duration) *Server {
@@ -45,6 +47,11 @@ func NewServer(n *node.Node, seeds []*node.Node, replicaPeers []*node.Node, tFai
 // Suitable for use as ring.IsAlive.
 func (s *Server) NodeIsAlive(nodeID string) bool {
 	return s.members.IsAlive(nodeID)
+}
+
+// GossipMembers returns a snapshot of this server's gossip membership view.
+func (s *Server) GossipMembers() []gossip.MemberEntry {
+	return s.members.Entries()
 }
 
 func (s *Server) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
@@ -69,20 +76,24 @@ func (s *Server) HintedPut(_ context.Context, req *pb.HintedPutRequest) (*pb.Put
 	return &pb.PutResponse{}, nil
 }
 
-// Start listens on the node's address and serves gRPC requests. Blocks until the server stops.
-func (s *Server) Start() error {
-	lis, err := net.Listen("tcp", s.node.Addr)
-	if err != nil {
-		return err
-	}
-	grpcServer := grpc.NewServer()
-	pb.RegisterKVServer(grpcServer, s)
+// Start registers gRPC handlers, launches background goroutines, and serves.
+// Blocks until Stop is called.
+func (s *Server) Start(lis net.Listener) error {
+	s.grpcServer = grpc.NewServer()
+	pb.RegisterKVServer(s.grpcServer, s)
 
 	go s.runGossip()
 	go s.runHandoff()
 	go s.runAntiEntropy()
 
-	return grpcServer.Serve(lis)
+	return s.grpcServer.Serve(lis)
+}
+
+// Stop gracefully stops the gRPC server.
+func (s *Server) Stop() {
+	if s.grpcServer != nil {
+		s.grpcServer.Stop()
+	}
 }
 
 // Gossip receives a peer's membership list, merges it, and responds with ours.

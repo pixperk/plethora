@@ -6,12 +6,11 @@ import (
 	"net"
 	"time"
 
+	"github.com/pixperk/plethora/merkle"
 	"github.com/pixperk/plethora/node"
-	pb "github.com/pixperk/plethora/proto"
 	"github.com/pixperk/plethora/ring"
 	"github.com/pixperk/plethora/server"
 	"github.com/pixperk/plethora/types"
-	"google.golang.org/grpc"
 )
 
 func main() {
@@ -38,13 +37,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// each node only knows 2 seeds (next 2 in ring), gossip discovers the rest
 	servers := make([]*server.Server, numNodes)
 	for i, n := range nodes {
-		srv := server.NewServer(n, nodes, r.ReplicaPeers(n.NodeID), tFail)
+		seeds := []*node.Node{
+			nodes[(i+1)%numNodes],
+			nodes[(i+2)%numNodes],
+		}
+		srv := server.NewServer(n, seeds, r.ReplicaPeers(n.NodeID), tFail)
 		servers[i] = srv
-		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, srv)
-		go grpcServer.Serve(listeners[i])
+		go srv.Start(listeners[i])
 		fmt.Printf("[BOOT] %s listening on %s\n", n.NodeID, n.Addr)
 	}
 
@@ -58,6 +60,31 @@ func main() {
 	}
 	fmt.Println()
 
+	// ---- gossip convergence demo ----
+	fmt.Println("--- gossip protocol (each node starts with 2 seeds) ---")
+	fmt.Println()
+	for tick := 1; tick <= 5; tick++ {
+		time.Sleep(1 * time.Second)
+		converged := 0
+		for i, srv := range servers {
+			count := len(srv.GossipMembers())
+			if tick == 1 || tick == 3 || tick == 5 {
+				fmt.Printf("  %s sees %d/%d members\n", nodes[i].NodeID, count, numNodes)
+			}
+			if count == numNodes {
+				converged++
+			}
+		}
+		if tick == 1 || tick == 3 || tick == 5 {
+			fmt.Printf("[GOSSIP] after %ds: %d/%d nodes converged\n\n", tick, converged, numNodes)
+		}
+		if converged == numNodes {
+			fmt.Printf("[GOSSIP] fully converged after %ds!\n\n", tick)
+			break
+		}
+	}
+
+	// ---- put/get demo ----
 	keys := []string{"user:alice", "user:bob", "user:charlie", "order:1001", "order:1002"}
 	vals := []string{"Alice Smith", "Bob Jones", "Charlie Brown", "Widget x3", "Gadget x1"}
 
@@ -105,4 +132,30 @@ func main() {
 
 	result, err = r.Get(types.Key("nonexistent"))
 	fmt.Printf("[GET] key=%q vals=%v err=%v\n", "nonexistent", result, err)
+	fmt.Println()
+
+	// ---- merkle tree comparison demo ----
+	fmt.Println("--- merkle tree comparison ---")
+	fmt.Println()
+
+	// pick two replicas of the same key and compare their merkle trees
+	demoKey := types.Key("user:alice")
+	plist := r.PreferenceList(demoKey)
+	replica1 := plist[0].Node
+	replica2 := plist[1].Node
+
+	fmt.Printf("[MERKLE] replicas for %q: %s, %s\n", string(demoKey), replica1.NodeID, replica2.NodeID)
+
+	tree1 := replica1.MerkleTree()
+	tree2 := replica2.MerkleTree()
+
+	fmt.Printf("[MERKLE] %s: %d keys, root=%x\n", replica1.NodeID, len(replica1.Storage.KeyHashes()), tree1.Hash)
+	fmt.Printf("[MERKLE] %s: %d keys, root=%x\n", replica2.NodeID, len(replica2.Storage.KeyHashes()), tree2.Hash)
+
+	diffKeys := merkle.Diff(tree1, tree2)
+	if len(diffKeys) == 0 {
+		fmt.Println("[MERKLE] trees are identical -- replicas in sync!")
+	} else {
+		fmt.Printf("[MERKLE] %d divergent keys: %v\n", len(diffKeys), diffKeys)
+	}
 }

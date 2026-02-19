@@ -188,14 +188,14 @@ proto/kv.proto defines:
         rpc Put(PutRequest) returns (PutResponse)
         rpc Get(GetRequest) returns (GetResponse)
         rpc HintedPut(HintedPutRequest) returns (PutResponse)
-        rpc Heartbeat(stream HeartbeatMessage) returns (stream HeartbeatMessage)
         rpc GetKeyHashes(GetKeyHashesRequest) returns (GetKeyHashesResponse)
         rpc SyncKeys(SyncKeysRequest) returns (SyncKeysResponse)
+        rpc Gossip(GossipRequest) returns (GossipResponse)
     }
 ```
 
-- **server**: each node runs a grpc server. Put calls `node.Store()`, Get calls `node.Get()`, HintedPut calls `node.StoreHint()`. the Heartbeat handler is a bidirectional stream for failure detection. GetKeyHashes returns the node's key-hash pairs for merkle tree comparison. SyncKeys returns actual values for a set of keys. each server also tracks a peers map (nodeID -> addr), an alive map updated by heartbeats, and a replica peers list for anti-entropy.
-- **client**: `RemotePut`, `RemoteGet`, `RemoteHintedPut`, `RemoteGetKeyHashes`, and `RemoteSyncKeys`. dial the node's address, make the rpc, convert proto back to types.
+- **server**: each node runs a grpc server. Put calls `node.Store()`, Get calls `node.Get()`, HintedPut calls `node.StoreHint()`. GetKeyHashes returns the node's key-hash pairs for merkle tree comparison. SyncKeys returns actual values for a set of keys. Gossip exchanges membership lists for failure detection and node discovery. each server holds a gossip `MemberList` and a replica peers list for anti-entropy.
+- **client**: `RemotePut`, `RemoteGet`, `RemoteHintedPut`, `RemoteGetKeyHashes`, `RemoteSyncKeys`, and `RemoteGossip`. dial the node's address, make the rpc, convert proto back to types.
 - **ring**: `ring.Put` and `ring.Get` use grpc client calls. on put failure, the ring falls back to `RemoteHintedPut` on a stand-in node. `ReplicaPeers` computes which nodes share key ranges for anti-entropy.
 
 the ring tests start real grpc servers on random OS-assigned ports and exercise the full put/get path including sloppy quorum.
@@ -213,16 +213,15 @@ sequenceDiagram
     R->>S: HintedPut(key, val, target=T)
     S->>S: storeHint(T, key, val)
     note over T: node recovers
-    T->>S: heartbeat stream opens
-    S->>S: alive[T] = true
+    note over S: gossip detects T alive
     note over S: handoff ticker fires
     S->>S: drainHints(T)
     S->>T: RemotePut(key, val)
 ```
 
 - each server runs a background `runHandoff` goroutine on a 5-second ticker.
-- on each tick, it iterates the alive map. for every node marked alive, it drains all pending hints and forwards them via `RemotePut`.
-- the heartbeat is a bidirectional grpc stream. as long as messages flow, the peer is alive. when the stream breaks (recv error), the peer is marked dead.
+- on each tick, it asks the gossip `MemberList` for all alive peers. for every alive node, it drains all pending hints and forwards them via `RemotePut`.
+- failure detection comes from the gossip protocol: if a node's heartbeat counter hasn't increased within `tFail`, it's considered down.
 - hints live in the node's `HintStore`, a `map[string][]HintedItem` separate from main storage. they never show up in gets. `drainHints` atomically removes and returns all items for a target, so each hint is forwarded exactly once.
 
 ### layer 8: merkle trees (anti-entropy sync)
@@ -266,6 +265,36 @@ anti-entropy only syncs with **replica peers**, nodes that share at least one ke
 
 the merkle tree never goes over the wire. only flat key-hash pairs and actual values do. the tree is a local optimization to narrow down divergence efficiently.
 
+### layer 9: gossip protocol (membership and failure detection)
+
+gossip replaces the need for a central membership registry and explicit heartbeat streams. every node maintains a local `MemberList` and periodically exchanges it with a random peer.
+
+```mermaid
+sequenceDiagram
+    participant A as node 1
+    participant B as node 3 (random peer)
+
+    note over A: 1s ticker fires
+    A->>A: tick own heartbeat counter
+    A->>B: Gossip(my member list)
+    B->>B: merge(A's list)
+    B-->>A: my member list
+    A->>A: merge(B's list)
+```
+
+**member entry**: `{nodeID, addr, heartbeat, timestamp}`. heartbeat is a monotonic counter only incremented by the owning node. timestamp is the local wall time when we last saw this node's heartbeat increase.
+
+**merge rule**: for each entry, keep the higher heartbeat counter. if the counter went up, reset timestamp to now. new nodes discovered transitively through gossip are added automatically.
+
+**failure detection**: if `now - timestamp > tFail`, the node is considered down. the ring's `IsAlive` callback reads from gossip state, so sloppy quorum automatically routes around dead nodes.
+
+**seed nodes**: each node starts with a small set of known seeds (not the full cluster). gossip transitively discovers the rest. seeds ensure convergence even after network partitions heal.
+
+**what gossip replaced**:
+- the bidirectional heartbeat stream (gossip subsumes failure detection)
+- the `allNodes` parameter in server creation (nodes discover peers through gossip)
+- the manual `alive` map with mutex (gossip `MemberList` is self-contained and thread-safe)
+
 ## project structure
 
 ```
@@ -276,8 +305,9 @@ plethora/
     node/        node with identity, storage, hint store, cached merkle tree
     merkle/      merkle tree: Build, Diff, collectKeys
     ring/        consistent hash ring, sloppy quorum, replication, dedup, ReplicaPeers
-    server/      grpc server: put, get, hinted put, heartbeat, handoff, anti-entropy
-    client/      grpc client helpers (RemotePut, RemoteGet, RemoteHintedPut, RemoteGetKeyHashes, RemoteSyncKeys)
+    gossip/      gossip protocol: MemberList, heartbeat-based failure detection
+    server/      grpc server: put, get, hinted put, gossip, handoff, anti-entropy
+    client/      grpc client helpers (RemotePut, RemoteGet, RemoteHintedPut, RemoteGetKeyHashes, RemoteSyncKeys, RemoteGossip)
     proto/       protobuf definition and generated code
     cmd/         demo: boots 10 nodes, puts and gets over grpc
 ```
@@ -285,7 +315,7 @@ plethora/
 ## running it
 
 ```bash
-go test ./...         # run all tests (29 total, includes sloppy quorum test)
+go test ./...         # run all tests (60 total)
 go run ./cmd/         # boot 10 nodes on random ports, run demo puts and gets
 ```
 
@@ -300,9 +330,8 @@ go run ./cmd/         # boot 10 nodes on random ports, run demo puts and gets
 | grpc networking | done |
 | sloppy quorum | done |
 | hinted handoff | done |
-| heartbeat failure detection (bidir stream) | done |
 | merkle trees (anti-entropy sync) | done |
-| gossip protocol (membership) | next |
+| gossip protocol (membership + failure detection) | done |
 
 ## config
 

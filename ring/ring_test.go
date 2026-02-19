@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/pixperk/plethora/node"
-	pb "github.com/pixperk/plethora/proto"
 	"github.com/pixperk/plethora/server"
-	"google.golang.org/grpc"
 )
 
 func makeNodes(ids ...string) []*node.Node {
@@ -39,10 +37,9 @@ func makeServedNodes(t *testing.T, ids ...string) []*node.Node {
 
 	// phase 2: start servers with gossip seeds
 	for i, n := range nodes {
-		grpcServer := grpc.NewServer()
-		pb.RegisterKVServer(grpcServer, server.NewServer(n, nodes, nil, 10*time.Second))
-		go grpcServer.Serve(listeners[i])
-		t.Cleanup(grpcServer.Stop)
+		srv := server.NewServer(n, nodes, nil, 10*time.Second)
+		go srv.Start(listeners[i])
+		t.Cleanup(srv.Stop)
 	}
 	return nodes
 }
@@ -296,7 +293,7 @@ func TestSloppyQuorumHintedHandoff(t *testing.T) {
 	// then kill one preferred node and verify put still succeeds
 	nodes := make([]*node.Node, 4)
 	listeners := make([]net.Listener, 4)
-	grpcServers := make([]*grpc.Server, 4)
+	servers := make([]*server.Server, 4)
 
 	ids := []string{"n1", "n2", "n3", "n4"}
 	for i, id := range ids {
@@ -308,11 +305,9 @@ func TestSloppyQuorumHintedHandoff(t *testing.T) {
 		nodes[i] = node.NewNode(id, lis.Addr().String())
 	}
 	for i, n := range nodes {
-		grpcServers[i] = grpc.NewServer()
-		srv := server.NewServer(n, nodes, nil, 10*time.Second)
-		pb.RegisterKVServer(grpcServers[i], srv)
-		go grpcServers[i].Serve(listeners[i])
-		t.Cleanup(grpcServers[i].Stop)
+		servers[i] = server.NewServer(n, nodes, nil, 10*time.Second)
+		go servers[i].Start(listeners[i])
+		t.Cleanup(servers[i].Stop)
 	}
 
 	r, _ := NewRing(12, 3, 2, 2, nodes)
@@ -324,7 +319,7 @@ func TestSloppyQuorumHintedHandoff(t *testing.T) {
 	// stop the victim's server and tell the ring it's dead
 	for i, n := range nodes {
 		if n.NodeID == victim.Node.NodeID {
-			grpcServers[i].Stop()
+			servers[i].Stop()
 			break
 		}
 	}
