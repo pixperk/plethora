@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"net"
+	"sync"
+	"time"
 
+	"github.com/pixperk/plethora/client"
 	"github.com/pixperk/plethora/node"
 	pb "github.com/pixperk/plethora/proto"
 	"github.com/pixperk/plethora/types"
@@ -14,10 +17,34 @@ import (
 type Server struct {
 	pb.UnimplementedKVServer
 	node *node.Node
+
+	//hinted handoff
+	peers    map[string]string //nodeID -> addr of peer nodes for hint forwarding
+	addrToID map[string]string //addr -> nodeID for reverse lookup when receiving hints
+	alive    map[string]bool   //nodeID -> alive status of peer nodes
+
+	aliveMu sync.RWMutex
 }
 
-func NewServer(n *node.Node) *Server {
-	return &Server{node: n}
+func NewServer(n *node.Node, allNodes []*node.Node) *Server {
+	peers := make(map[string]string)
+	addrToID := make(map[string]string)
+	alive := make(map[string]bool)
+	for _, node := range allNodes {
+		if node.NodeID == n.NodeID {
+			continue
+		}
+		peers[node.NodeID] = node.Addr
+		addrToID[node.Addr] = node.NodeID
+		alive[node.NodeID] = true // assume all nodes start alive; in a real system we'd want a more robust health check
+	}
+
+	return &Server{
+		node:     n,
+		peers:    peers,
+		addrToID: addrToID,
+		alive:    alive,
+	}
 }
 
 func (s *Server) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
@@ -34,6 +61,14 @@ func (s *Server) Get(_ context.Context, req *pb.GetRequest) (*pb.GetResponse, er
 	}, nil
 }
 
+// StoreHint stores a hinted value for a target node that is currently unreachable.
+// The coordinator calls this when it fails to forward a write to a replica node, and the target node will attempt to apply the hinted writes when it recovers.
+func (s *Server) HintedPut(_ context.Context, req *pb.HintedPutRequest) (*pb.PutResponse, error) {
+	val := fromProtoValue(req.Value)
+	s.node.StoreHint(req.TargetNodeId, types.Key(req.Key), val)
+	return &pb.PutResponse{}, nil
+}
+
 // Start listens on the node's address and serves gRPC requests. Blocks until the server stops.
 func (s *Server) Start() error {
 	lis, err := net.Listen("tcp", s.node.Addr)
@@ -42,7 +77,57 @@ func (s *Server) Start() error {
 	}
 	grpcServer := grpc.NewServer()
 	pb.RegisterKVServer(grpcServer, s)
+
+	go s.runHandoff()
+
 	return grpcServer.Serve(lis)
+}
+
+func (s *Server) Heartbeat(stream pb.KV_HeartbeatServer) error {
+	msg, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	peerID := msg.NodeId
+
+	s.aliveMu.Lock()
+	s.alive[peerID] = true
+	s.aliveMu.Unlock()
+
+	//keep receiving heartbeats until the stream is closed,
+	// if we get an error receiving, mark the peer as dead and exit
+	for {
+		_, err := stream.Recv()
+		if err != nil {
+			// stream broke = peer is down
+			s.aliveMu.Lock()
+			s.alive[peerID] = false
+			s.aliveMu.Unlock()
+			return err
+		}
+	}
+
+}
+
+// runHandoff periodically checks for any hints that need to be forwarded to their target nodes and attempts to send them.
+func (s *Server) runHandoff() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.aliveMu.RLock()
+		for nodeID, up := range s.alive {
+			if !up {
+				continue
+			}
+			addr := s.peers[nodeID]
+			items := s.node.DrainHints(nodeID)
+			for _, item := range items {
+				client.RemotePut(addr, item.Key, item.Value)
+			}
+		}
+		s.aliveMu.RUnlock()
+	}
 }
 
 // --- proto <-> types conversion helpers ---

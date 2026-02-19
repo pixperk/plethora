@@ -75,3 +75,19 @@ func (n *Node) DrainHints(targetNodeID string) []HintedItem {
 	delete(n.HintStore, targetNodeID)
 	return items
 }
+
+func BuildAddrToID(nodes []*Node) map[string]string {
+	m := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		m[n.Addr] = n.NodeID
+	}
+	return m
+}
+
+func BuildIDToAddr(nodes []*Node) map[string]string {
+	m := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		m[n.NodeID] = n.Addr
+	}
+	return m
+}
